@@ -1,0 +1,122 @@
+{
+  "mega_collection": {
+    "filename": "nuvio_mega_collection.json",
+    "title": "مجموعة Nuvio الضخمة",
+    "description": "مجموعة متكاملة ومدمجة في ملف واحد عالي الجودة. تستورد فوراً جميع الفئات الـ11 مع أكثر من 350 مجلداً مخصصاً، وبطاقات قاعدية ومتحركة مخصصة، وأعمال فنية ديناميكية نشطة.",
+    "categories_count": 11,
+    "folders_count": 471,
+    "size_kb": 992.3
+  },
+  "individual_collections": [
+    {
+      "id": "collection-UGED6TEZ",
+      "title": "الرائج والجديد",
+      "filename": "trending_new.json",
+      "description": "قوائم ديناميكية محدّثة تشمل متابعة Trakt، التوصيات، وقائمة المشاهدة الشخصية مع بطاقات تحويم متحركة مخصصة.",
+      "icon": "⚡",
+      "tag": "إعلام",
+      "folders_count": 6,
+      "size_kb": 40.9
+    },
+    {
+      "id": "collection-ERFS5GWK",
+      "title": "خدمات البث",
+      "filename": "streaming_services.json",
+      "description": "بطاقات قاعدية ومتحويمة متطابقة وراقية لجميع منصات البث الكبرى بما فيها Netflix وDisney+ وHBO Max وHulu وApple TV+ وPrime Video.",
+      "icon": "🎬",
+      "tag": "خدمات",
+      "folders_count": 19,
+      "size_kb": 194.5
+    },
+    {
+      "id": "27bda92a-f626-4093-a2ba-0a32dc09437a",
+      "title": "القنوات التلفزيونية",
+      "filename": "networks.json",
+      "description": "مجموعة ضخمة من الأعمال الفنية والتأثيرات المخصصة للقنوات التلفزيونية بما فيها AMC وBBC وFX وHBO وShowtime وCW والقنوات العالمية.",
+      "icon": "📺",
+      "tag": "قنوات",
+      "folders_count": 30,
+      "size_kb": 43.1
+    },
+    {
+      "id": "collection-HFTCV0TA",
+      "title": "الأنواع",
+      "filename": "genres.json",
+      "description": "خلفيات سينمائية رائعة وتصميمات مجلدات لأكشن والكوميديا والخيال العلمي والرعب والأنمي وجميع أنواع الأفلام والمسلسلات الكبرى.",
+      "icon": "🎭",
+      "tag": "أنواع",
+      "folders_count": 25,
+      "size_kb": 105.1
+    },
+    {
+      "id": "collection-8EYK6R4X",
+      "title": "مجموعات الأفلام",
+      "filename": "film_collections.json",
+      "description": "تخطيطات مجلدات مصممة مخصصاً للعوالم السينمائية الكبرى والملاحم وسلاسل الأفلام (مارفل، حرب النجوم، هاري بوتر، DC، وغيرها).",
+      "icon": "📦",
+      "tag": "مجموعات",
+      "folders_count": 200,
+      "size_kb": 207.0
+    },
+    {
+      "id": "collection-1IPJJWUO",
+      "title": "الممثلون",
+      "filename": "actors.json",
+      "description": "تصميمات مجلدات مميزة وأعمال فنية أنيقة لـ58 من أشهر وأعظم وأكثر الممثلين إثارةً للاهتمام في تاريخ السينما.",
+      "icon": "🌟",
+      "tag": "ممثلون",
+      "folders_count": 100,
+      "size_kb": 197.4
+    },
+    {
+      "id": "collection-13LJW3A6",
+      "title": "المخرجون الأساطير",
+      "filename": "legendary_directors.json",
+      "description": "تخطيطات عرض مخصصة تكريماً للمخرجين الأسطوريين (كريستوفر نولان، كوينتن تارانتينو، مارتن سكورسيزي، ستانلي كوبريك، والمزيد).",
+      "icon": "🎥",
+      "tag": "مخرجون",
+      "folders_count": 50,
+      "size_kb": 67.7
+    },
+    {
+      "id": "collection-XB14SDA2",
+      "title": "الاستوديوهات",
+      "filename": "studios.json",
+      "description": "بقع ضوء مخصصة لاستوديوهات الإنتاج الكبرى وشركات الرسوم المتحركة بما فيها Studio Ghibli وPixar وA24 وMarvel والمزيد.",
+      "icon": "🏰",
+      "tag": "استوديوهات",
+      "folders_count": 20,
+      "size_kb": 54.8
+    },
+    {
+      "id": "collection-Y2HQBZ5I",
+      "title": "حسب العقد",
+      "filename": "by_decade.json",
+      "description": "مجلدات كبسولة زمنية نوستالجية تجمع الروائع السينمائية والمسلسلات الناجحة حسب العقد، من خمسينيات القرن الماضي حتى العشرينيات.",
+      "icon": "📅",
+      "tag": "عقود",
+      "folders_count": 8,
+      "size_kb": 53.1
+    },
+    {
+      "id": "collection-b530d60c",
+      "title": "الأنمي",
+      "filename": "anime.json",
+      "description": "مجموعة عوالم أنمي مخصصة تضم أعمالاً فنية لمسلسلات شعبية وضربات Shonen وامتيازات الأنمي الكبرى.",
+      "icon": "🔥",
+      "tag": "أنمي",
+      "folders_count": 10,
+      "size_kb": 13.1
+    },
+    {
+      "id": "collection-56d0517f",
+      "title": "الجوائز",
+      "filename": "awards.json",
+      "description": "فئات جوائز مرموقة تعرض أفلام الأوسكار، جولدن جلوب، ومهرجان كان السينمائي.",
+      "icon": "🏆",
+      "tag": "جوائز",
+      "folders_count": 3,
+      "size_kb": 15.6
+    }
+  ]
+}

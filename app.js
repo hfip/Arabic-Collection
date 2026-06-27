@@ -1,0 +1,2642 @@
+/**
+ * Kaptain's Mega Collection — مخصص Collection Builder
+ * Client-side application logic
+ */
+
+// Application State
+let database = [];
+let selectedMap = {};  // { folderKey: { sourceTitle: boolean } }
+let currentCategoryIdx = 0;
+let isGuideActive = false;
+let isPreviewActive = false;
+let currentالبحث = '';
+let gridSize = 210;
+let activeDrawerFolder = null;
+
+// Bump this alongside the style.css?v=NN / app.js?v=NN cache-busters in index.html
+const KAPTAIN_VERSION = 'v22';
+
+// Nuvio TV/Mobile emulator (Preview) state
+let previewDevice = (() => { try { return localStorage.getItem('kaptain_preview_device') || 'tv'; } catch (e) { return 'tv'; } })();
+// Whether the mobile-only "more options" panel (device toggle / reorder /
+// editor view / layout / help) is expanded above the slim phone bottom bar.
+let previewMoreOpen = false;
+// Whether the mobile-only preview bar itself (Download / Send to Nuvio / ⋯,
+// plus whatever the ⋯ reveals) is expanded out من its collapsed FAB.
+let previewBarOpen = false;
+let featuredKey = null;            // folderKey shown in the preview hero
+let previewصفوف = [];              // array من arrays من focusable elements (focus engine)
+let previewPos = { r: 0, c: 0 };   // current focus position
+let activeCatIdx = 0;              // sidebar jump-nav highlight
+const categorySort = {};           // { catIdx: 'custom'|'az'|'za'|'selected' } — per-row sort preset
+let drawerالبحث = '';             // filter text for the open drawer's source list
+
+const CARD_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>';
+const CARD_MINUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>';
+
+// Ordering State
+let reorderMode = false;   // when true, up/down arrows appear at every level
+
+// Editor View — hides the hero so all rows/folders get more screen space.
+// Opt-in, per-browser; منf by default so the cinematic look stays the default.
+let editorViewActive = (() => { try { return localStorage.getItem('kaptain_editor_view') === '1'; } catch (e) { return false; } })();
+
+// Keeps the persistent top-bar reorder indicator in sync with reorderMode,
+// regardless من which toggle (Browse or Preview) flipped it, and across
+// category switches / view re-renders.
+function updateReorderBanner() {
+  const banner = document.getElementById('reorder-banner');
+  if (banner) banner.hidden = !reorderMode;
+}
+
+// View Mode State (per-browser; never shared with other visitors)
+let selectedViewMode = localStorage.getItem('kaptain_view_mode') || 'ROWS';
+let lastExportOptimize = false;  // decided per-export by the mobile-compat gate
+
+// Walkthrough State
+let walkthroughActive = false;
+let walkthroughخطوة = 0;
+let preWalkthroughState = null;
+
+// Sidebar overlay helpers (module-scope so walkthrough can open it)
+function openSidebar() {
+  document.querySelector('.sidebar')?.classقائمة.add('open');
+  document.getElementById('sidebar-backdrop')?.classقائمة.add('open');
+  document.getElementById('sidebar-toggle')?.setAttribute('aria-expanded', 'true');
+}
+function closeSidebar() {
+  document.querySelector('.sidebar')?.classقائمة.remove('open');
+  document.getElementById('sidebar-backdrop')?.classقائمة.remove('open');
+  document.getElementById('sidebar-toggle')?.setAttribute('aria-expanded', 'false');
+}
+
+const WALKTHROUGH_STEPS = [
+  {
+    title: "نظرة عامة على الواجهة",
+    body: "هذه معاينة مباشرة لشاشة Nuvio الرئيسية، تماماً كما ستظهر بعد الإرسال. جولة سريعة على كل ما يمكنك تخصيصه.",
+    target: null,
+    position: 'center',
+    nextLabel: 'تفضل أرني'
+  },
+  {
+    title: 'الانتقال لقسم',
+    body: 'هذه هي أقسامك: الرائج، البث، الأنواع، والمزيد. انقر على أي منها للانتقال مباشرة إلى صفه. زر التبديل بجانب كل قسم يضيف أو يزيل القسم كله دفعة واحدة.',
+    target: '#category-scroller',
+    position: 'right',
+    nextLabel: 'Next'
+  },
+  {
+    title: 'إضافة وإزالة المجلدات',
+    body: "كل مجلد يظهر كبطاقة. البطاقات المضيئة مضافة لمجموعتك؛ الباهتة ليست كذلك. مرر الماوس أو انقر على بطاقة واستخدم زر + أو − لإضافتها أو إزالتها، أو افتح الترس للتحكم الدقيق.",
+    target: '.nv-card',
+    position: 'right',
+    nextLabel: 'Next'
+  },
+  {
+    title: 'اختر المصادر بدقة',
+    body: "انقر على الترس في أي بطاقة لفتح قائمة مصادرها، ثم فعّل أو أوقف قوائم Trakt و TMDB بشكل فردي داخل ذلك المجلد.",
+    target: null,
+    position: 'center',
+    nextLabel: 'Next'
+  },
+  {
+    title: 'التلفاز أو الجوال',
+    body: "انتقل بين كيفية ظهور مجموعتك على التلفاز وعلى الجوال. استخدم مفاتيح الأسهم للتنقل كالريموت الحقيقي، والبطاقة المحددة تظهر كبطل في الأعلى.",
+    target: '.nv-device-toggle',
+    position: 'bottom',
+    nextLabel: 'Next'
+  },
+  {
+    title: 'التخطيط والترتيب وإعادة الترتيب',
+    body: "غيّر طريقة عرض كل شيء داخل Nuvio (صفوف، شبكة بتبويبات، أو تخطيط تلقائي)، وفعّل إعادة الترتيب لسحب الأقسام والمجلدات. على الجوال، انقر زر ⋯ للوصول إليها.",
+    target: '.nv-preview-secondary',
+    position: 'bottom',
+    nextLabel: 'Next'
+  },
+  {
+    title: 'إرسال مباشرة إلى Nuvio',
+    body: "عندما تكون راضياً، يقوم زر الإرسال بتسجيل دخولك (أو إنشاء حساب) وتحميل مجموعتك فوراً، متزامنةً على جميع أجهزتك. تفضل التحكم بنفسك؟ حمّل الملف واستورده يدوياً.",
+    target: '#preview-send',
+    position: 'bottom',
+    nextLabel: 'فهمت'
+  }
+];
+
+// ==========================================================================
+// 1. BOOTSTRAP
+// ==========================================================================
+
+document.addEventقائمةener('DOMContentLoaded', () => {
+  initializeDatabase();
+  bindGlobalEvents();
+});
+
+function initializeDatabase() {
+  if (window.NUVIO_DATABASE && Array.isArray(window.NUVIO_DATABASE)) {
+    database = window.NUVIO_DATABASE;
+  } else {
+    database = [];
+  }
+
+  // Initialize: everything selected by default (Full Mega Bundle)
+  initializeSelections();
+
+  // Render UI — the preview emulator is the main (and only) view now.
+  renderSidebar();
+  isPreviewActive = true;
+  isGuideActive = false;
+  switchCategory(-2);
+  updateControlCenterStats();
+
+  // Title screen is the first thing every visitor sees; it منfers the
+  // walkthrough or a straight path in, so nothing auto-starts the tour anymore.
+  showTitleScreen();
+}
+
+function initializeSelections() {
+  selectedMap = {};
+  database.forEach(category => {
+    if (!category.folders) return;
+    category.folders.forEach(folder => {
+      const folderKey = getFolderKey(folder);
+      selectedMap[folderKey] = {};
+      if (folder.مصادر) {
+        folder.مصادر.forEach(source => {
+          selectedMap[folderKey][getمصدرKey(source)] = true;
+        });
+      }
+    });
+  });
+}
+
+function getFolderKey(folder) {
+  return folder.id || folder.title;
+}
+
+function getمصدرKey(source) {
+  return source.title || "مصدر افتراضي";
+}
+
+// ==========================================================================
+// 1b. ORDERING HELPERS (sort + manual reorder)
+// ==========================================================================
+
+// Move the item at `fromIdx` one slot in `dir` (-1 up, +1 down). Returns the
+// item's new index (unchanged if it was already at the boundary).
+function moveItem(arr, fromIdx, dir) {
+  const toIdx = fromIdx + dir;
+  if (!Array.isArray(arr) || toIdx < 0 || toIdx >= arr.length) return fromIdx;
+  const [item] = arr.splice(fromIdx, 1);
+  arr.splice(toIdx, 0, item);
+  return toIdx;
+}
+
+// Stable A–Z ('az') / Z–A ('za') sort on `.title`. Mutates in place.
+function sortByTitle(arr, dir) {
+  if (!Array.isArray(arr)) return;
+  const factor = dir === 'za' ? -1 : 1;
+  arr.sort((a, b) =>
+    factor * String(a.title || '').localeCompare(String(b.title || ''), undefined, { sensitivity: 'base' })
+  );
+}
+
+// Small up/down arrow control. `disableUp`/`disableDown` grey out the ends.
+function reorderArrowsHtml(disableUp, disableDown) {
+  return `
+    <div class="reorder-arrows">
+      <button class="reorder-arrow" data-dir="-1" ${disableUp ? 'disabled' : ''} title="تحريك لأعلى" aria-label="تحريك لأعلى">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
+      </button>
+      <button class="reorder-arrow" data-dir="1" ${disableDown ? 'disabled' : ''} title="تحريك لأسفل" aria-label="تحريك لأسفل">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+      </button>
+    </div>`;
+}
+
+// ==========================================================================
+// 2. SIDEBAR
+// ==========================================================================
+
+function renderSidebar() {
+  const scroller = document.getElementById('category-scroller');
+  if (!scroller) return;
+
+  scroller.innerHTML = '';
+
+  // Collection-level sort toolbar
+  const toolbar = document.createElement('div');
+  toolbar.className = 'sidebar-sort-toolbar';
+  toolbar.innerHTML = `
+    <span class="sidebar-sort-label">Sections</span>
+    <select id="collection-sort" class="topbar-select sidebar-sort-select" title="ترتيب الأقسام">
+      <option value="custom">ترتيب مخصص</option>
+      <option value="az">A–Z</option>
+      <option value="za">Z–A</option>
+    </select>
+  `;
+  scroller.appendChild(toolbar);
+  const collSortSelect = toolbar.querySelector('#collection-sort');
+  collSortSelect.addEventقائمةener('change', () => {
+    if (collSortSelect.value === 'az' || collSortSelect.value === 'za') {
+      const activeCat = database[currentCategoryIdx];
+      sortByTitle(database, collSortSelect.value);
+      // Keep the same section highlighted after a sort
+      if (activeCat) {
+        const newIdx = database.indexOf(activeCat);
+        if (newIdx >= 0) currentCategoryIdx = newIdx;
+      }
+      renderSidebar();
+      if (isPreviewActive) renderPreviewCollection();   // reorder the rows too
+    }
+  });
+
+  database.forEach((category, idx) => {
+    const stats = getCategorySelectionStats(idx);
+    const catNavItem = document.createElement('button');
+    catNavItem.className = `cat-nav-item ${(!isGuideActive && idx === activeCatIdx) ? 'active' : ''}`;
+
+    const emoji = getCategoryEmoji(category.title);
+
+    // Determine toggle state
+    let toggleClass = '';
+    let toggleIcon = '';
+    if (stats.selectedFolders === stats.totalFolders && stats.totalFolders > 0) {
+      toggleClass = 'checked';
+      toggleIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+    } else if (stats.selectedFolders > 0) {
+      toggleClass = 'partial';
+      toggleIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="6" y1="12" x2="18" y2="12"></line></svg>`;
+    }
+
+    // Progress ring: fills proportionally to how much من the section is selected.
+    const ringC = 56.5;   // 2πr for r=9
+    const ringPct = stats.totalFolders ? stats.selectedFolders / stats.totalFolders : 0;
+    const ringOffset = ringC * (1 - ringPct);
+    const ringHtml = `
+      <svg class="cat-ring ${ringPct >= 1 ? 'full' : ''}" viewBox="0 0 24 24" aria-hidden="true">
+        <circle class="cat-ring-track" cx="12" cy="12" r="9"></circle>
+        <circle class="cat-ring-fill" cx="12" cy="12" r="9" style="stroke-dasharray:${ringC};stroke-dashمنfset:${ringOffset};"></circle>
+      </svg>`;
+
+    const rightGroup = reorderMode
+      ? `<div class="cat-right-group">${reorderArrowsHtml(idx === 0, idx === database.length - 1)}</div>`
+      : `<div class="cat-right-group">
+           <span class="cat-badge" title="${stats.selectedFolders} من ${stats.totalFolders} مجلدات محددة">${ringHtml}${stats.selectedFolders}/${stats.totalFolders}</span>
+           <div class="cat-toggle ${toggleClass}" data-cat-idx="${idx}" title="تبديل كل مجلدات هذا القسم">
+             ${toggleIcon}
+           </div>
+         </div>`;
+
+    catNavItem.innerHTML = `
+      <div class="cat-info-combo">
+        <span class="cat-emoji">${emoji}</span>
+        <span class="cat-name">${category.title}</span>
+      </div>
+      ${rightGroup}
+    `;
+
+    // Click category name → jump to that row in the preview
+    catNavItem.addEventقائمةener('click', (e) => {
+      // Don't navigate if they clicked the toggle or a reorder arrow
+      if (e.target.closest('.cat-toggle') || e.target.closest('.reorder-arrows')) return;
+      jumpToCategory(idx);
+    });
+
+    if (reorderMode) {
+      catNavItem.querySelectorالكل('.reorder-arrow').forEach((btn) => {
+        btn.addEventقائمةener('click', (e) => {
+          e.stopPropagation();
+          if (btn.disabled) return;
+          const dir = parseInt(btn.getAttribute('data-dir'), 10);
+          const newIdx = moveItem(database, idx, dir);
+          activeCatIdx = newIdx;             // keep the moved section highlighted
+          renderSidebar();
+          if (isPreviewActive) renderPreviewCollection();   // move the row to match
+        });
+      });
+    } else {
+      // Click toggle → bulk select/deselect
+      const toggleEl = catNavItem.querySelector('.cat-toggle');
+      toggleEl.addEventقائمةener('click', (e) => {
+        e.stopPropagation();
+        const allSelected = stats.selectedFolders === stats.totalFolders;
+        toggleCategorySelection(idx, !allSelected);
+      });
+    }
+
+    scroller.appendChild(catNavItem);
+  });
+
+  // Divider
+  const divider = document.createElement('div');
+  divider.style.cssText = 'height:1px;background:var(--border);margin:14px 12px;';
+  scroller.appendChild(divider);
+
+  // دليل الإعداد tab
+  const guideItem = document.createElement('button');
+  guideItem.className = `cat-nav-item ${isGuideActive ? 'active' : ''}`;
+  guideItem.innerHTML = `
+    <div class="cat-info-combo">
+      <span class="cat-emoji">📖</span>
+      <span class="cat-name">دليل الإعداد</span>
+    </div>
+  `;
+  guideItem.addEventقائمةener('click', () => {
+    isPreviewActive = false;
+    isGuideActive = true;
+    switchCategory(-1);
+  });
+  scroller.appendChild(guideItem);
+}
+
+function getCategorySelectionStats(categoryIdx) {
+  const category = database[categoryIdx];
+  if (!category || !category.folders) return { totalFolders: 0, selectedFolders: 0, totalمصدرs: 0, selectedمصدرs: 0 };
+
+  let totalFolders = category.folders.length;
+  let selectedFolders = 0;
+  let totalمصدرs = 0;
+  let selectedمصدرs = 0;
+
+  category.folders.forEach(folder => {
+    const folderKey = getFolderKey(folder);
+    const مصادر = folder.مصادر || [];
+    totalمصدرs += مصادر.length;
+
+    let folderHasActive = false;
+    مصادر.forEach(source => {
+      const sourceKey = getمصدرKey(source);
+      if (selectedMap[folderKey] && selectedMap[folderKey][sourceKey]) {
+        selectedمصدرs++;
+        folderHasActive = true;
+      }
+    });
+
+    if (folderHasActive) selectedFolders++;
+  });
+
+  return { totalFolders, selectedFolders, totalمصدرs, selectedمصدرs };
+}
+
+function toggleCategorySelection(categoryIdx, selectالكل) {
+  const category = database[categoryIdx];
+  if (!category || !category.folders) return;
+
+  category.folders.forEach(folder => {
+    const folderKey = getFolderKey(folder);
+    if (!selectedMap[folderKey]) selectedMap[folderKey] = {};
+    if (folder.مصادر) {
+      folder.مصادر.forEach(source => {
+        selectedMap[folderKey][getمصدرKey(source)] = selectالكل;
+      });
+    }
+  });
+
+  renderSidebar();
+  if (isPreviewActive) {
+    // Refresh just this category's cards in place so the scroll position holds.
+    const row = document.getElementById('nv-cat-' + categoryIdx);
+    if (row) row.querySelectorالكل('.nv-card').forEach(c => { if (c.__folder) refreshCardState(c, c.__folder); });
+  } else if (!isGuideActive && currentCategoryIdx === categoryIdx) {
+    renderFolderGrid();
+  }
+  updateControlCenterStats();
+}
+
+function getCategoryEmoji(title) {
+  const t = title.toLowerCase();
+  if (t.includes('trending') || t.includes('new')) return '⚡';
+  if (t.includes('streaming') || t.includes('services')) return '🎬';
+  if (t.includes('networks')) return '📺';
+  if (t.includes('genres')) return '🎭';
+  if (t.includes('film') || t.includes('collection')) return '📦';
+  if (t.includes('actor')) return '🌟';
+  if (t.includes('director')) return '🎥';
+  if (t.includes('studio')) return '🏰';
+  if (t.includes('decade') || t.includes('year')) return '📅';
+  if (t.includes('anime')) return '🔥';
+  if (t.includes('award')) return '🏆';
+  return '📁';
+}
+
+// ==========================================================================
+// 3. CATEGORY SWITCH & TOP BAR
+// ==========================================================================
+
+function switchCategory(idx) {
+  currentCategoryIdx = idx;
+  currentالبحث = '';
+  updateReorderBanner();
+  // Any view switch tears down the old preview; renderPreviewCollection restarts
+  // the carousel when we land back in preview mode.
+  stopHeroCarousel();
+
+  const searchField = document.getElementById('dashboard-search');
+  if (searchField) searchField.value = '';
+
+  renderSidebar();
+
+  const titleEl = document.getElementById('view-title');
+  const subtitleEl = document.getElementById('view-subtitle');
+  const topBar = document.querySelector('.top-bar');
+  const controlCenter = document.getElementById('control-center-bar');
+  const actionsGroup = document.getElementById('category-actions-group');
+  // Browse-only top-bar controls (search/view-mode/sort/reorder/zoom) are shown
+  // or hidden by a CSS class on the top bar — never inline display — so that
+  // responsive media queries can still collapse non-essential controls.
+  const setMode = (mode) => {
+    if (!topBar) return;
+    topBar.classقائمة.toggle('mode-browse', mode === 'browse');
+    topBar.classقائمة.toggle('mode-preview', mode === 'preview');
+    topBar.classقائمة.toggle('mode-guide', mode === 'guide');
+  };
+
+  if (isPreviewActive) {
+    titleEl.textContent = '';
+    subtitleEl.textContent = '';
+    setMode('preview');
+    // The preview has its own slim Download / Send bar, so hide the editor's
+    // bottom control-center to avoid a duplicate action bar.
+    if (controlCenter) {
+      controlCenter.style.opacity = '0';
+      controlCenter.style.pointerEvents = 'none';
+      const panel = controlCenter.querySelector('.control-center-panel');
+      if (panel) panel.style.pointerEvents = 'none';
+    }
+    if (actionsGroup) actionsGroup.innerHTML = '';
+    renderPreviewCollection();
+  } else if (isGuideActive) {
+    titleEl.textContent = 'دليل الإعداد';
+    subtitleEl.textContent = 'كيفية استيراد مجموعتك المخصصة إلى Nuvio';
+    setMode('guide');
+    if (controlCenter) {
+      controlCenter.style.opacity = '0';
+      controlCenter.style.pointerEvents = 'none';
+      const panel = controlCenter.querySelector('.control-center-panel');
+      if (panel) panel.style.pointerEvents = 'none';
+    }
+    if (actionsGroup) actionsGroup.innerHTML = '';
+    renderSetupGuide();
+  } else {
+    isPreviewActive = false;
+    const category = database[currentCategoryIdx];
+    if (category) {
+      const stats = getCategorySelectionStats(currentCategoryIdx);
+      titleEl.textContent = category.title;
+      subtitleEl.textContent = reorderMode
+        ? 'وضع إعادة الترتيب — استخدم الأسهم ▲ ▼ لتحريك الأقسام والمجلدات والمصادر. انقر إعادة الترتيب مجدداً للإنهاء.'
+        : `${stats.selectedFolders} من ${stats.totalFolders} مجلدات محددة`;
+
+      if (category.folders && category.folders.length > 0) {
+        setCinematicWallpaper(category.folders[0]);
+      }
+    }
+
+    setMode('browse');
+    if (controlCenter) {
+      controlCenter.style.opacity = '1';
+      controlCenter.style.pointerEvents = 'auto';
+      const panel = controlCenter.querySelector('.control-center-panel');
+      if (panel) panel.style.pointerEvents = '';
+    }
+
+    // Reflect whatever sort was last applied to this category (kept in sync
+    // with the Preview-mode row sort via the shared categorySort map).
+    const folderSort = document.getElementById('folder-sort');
+    if (folderSort) folderSort.value = categorySort[currentCategoryIdx] || 'custom';
+
+    // Render category action buttons
+    renderCategoryActions();
+    renderFolderGrid();
+  }
+}
+
+function renderCategoryActions() {
+  const group = document.getElementById('category-actions-group');
+  if (!group) return;
+
+  const stats = getCategorySelectionStats(currentCategoryIdx);
+
+  group.innerHTML = `
+    <button class="cat-action-btn ${stats.selectedFolders === stats.totalFolders ? 'active-all' : ''}" id="btn-cat-select-all" title="تحديد كل مجلدات هذه الفئة">الكل</button>
+    <button class="cat-action-btn" id="btn-cat-select-none" title="إلغاء تحديد كل مجلدات هذه الفئة">None</button>
+  `;
+
+  document.getElementById('btn-cat-select-all').addEventقائمةener('click', () => {
+    toggleCategorySelection(currentCategoryIdx, true);
+    renderCategoryActions();
+    // Update subtitle
+    const stats = getCategorySelectionStats(currentCategoryIdx);
+    const subtitleEl = document.getElementById('view-subtitle');
+    if (subtitleEl) subtitleEl.textContent = `${stats.selectedFolders} من ${stats.totalFolders} مجلدات محددة`;
+  });
+
+  document.getElementById('btn-cat-select-none').addEventقائمةener('click', () => {
+    toggleCategorySelection(currentCategoryIdx, false);
+    renderCategoryActions();
+    const stats = getCategorySelectionStats(currentCategoryIdx);
+    const subtitleEl = document.getElementById('view-subtitle');
+    if (subtitleEl) subtitleEl.textContent = `${stats.selectedFolders} من ${stats.totalFolders} مجلدات محددة`;
+  });
+}
+
+// ==========================================================================
+// 4. FOLDER GRID RENDERER
+// ==========================================================================
+
+// Escape for safe HTML insertion (folder titles are controlled data, but the
+// search query is user input, so both go through this before highlighting).
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// Wrap the matched portion من a title in <mark> for search highlighting.
+function highlightMatch(title, query) {
+  const safe = escapeHtml(title);
+  const q = (query || '').trim();
+  if (!q) return safe;
+  const re = new RegExp('(' + escapeRegex(escapeHtml(q)) + ')', 'ig');
+  return safe.replace(re, '<mark>$1</mark>');
+}
+
+function renderFolderGrid() {
+  const canvas = document.getElementById('content-canvas');
+  if (!canvas || isGuideActive) return;
+  // While the Nuvio preview is open, edits made from inside it (inline curation,
+  // drawer source toggles) should refresh the emulator rather than swap in the
+  // editor grid that owns this same canvas.
+  if (isPreviewActive) { renderPreviewCollection(); return; }
+
+  canvas.innerHTML = `<div id="media-grid" class="media-grid"></div>`;
+  const grid = document.getElementById('media-grid');
+  grid.style.gridTemplateColumns = `repeat(auto-fill, minmax(${gridSize}px, 1fr))`;
+
+  const category = database[currentCategoryIdx];
+  if (!category || !category.folders || category.folders.length === 0) {
+    renderEmptyState(grid, "لا توجد مجلدات في هذه الفئة.");
+    return;
+  }
+
+  const query = currentالبحث.toLowerCase().trim();
+  const filteredFolders = category.folders.filter(folder => {
+    return query === '' || folder.title.toLowerCase().includes(query);
+  });
+
+  if (filteredFolders.length === 0) {
+    renderEmptyState(grid, `No results matching "${currentالبحث}".`);
+    return;
+  }
+
+  // Reorder arrows are only safe when the full, unfiltered list is shown.
+  const showArrows = reorderMode && query === '';
+  if (showArrows) grid.classقائمة.add('reordering');
+
+  filteredFolders.forEach(folder => {
+    const card = document.createElement('div');
+    const folderKey = getFolderKey(folder);
+    const sourceStats = getFolderمصدرCountStats(folder);
+    const isSelected = sourceStats.active > 0;
+    const realIdx = category.folders.indexOf(folder);
+
+    card.className = `folder-card ${isSelected ? 'selected' : ''} ${showArrows ? 'reorder-active' : ''}`;
+
+    const shape = folder.tileShape || "LANDSCAPE";
+    card.classقائمة.add(`aspect-${shape.toLowerCase()}`);
+
+    const baseImg = folder.coverImageUrl || '';
+    const hoverGif = folder.focusGifUrl || baseImg;
+
+    const logoOverlayHtml = folder.titleLogoUrl
+      ? `<div class="card-logo-overlay"><img src="${folder.titleLogoUrl}" alt="${folder.title}" class="card-logo-img"></div>`
+      : `<h4 class="card-text-title">${highlightMatch(folder.title, query)}</h4>`;
+
+    const controlsHeader = showArrows
+      ? `<div class="card-controls-header">
+           ${reorderArrowsHtml(realIdx === 0, realIdx === category.folders.length - 1)}
+           <div class="card-source-count-badge" title="المصادر النشطة">${sourceStats.active}/${sourceStats.total}</div>
+         </div>`
+      : `<div class="card-controls-header">
+           <div class="custom-checkbox-wrapper" title="${isSelected ? 'إزالة من المجموعة' : 'إضافة إلى المجموعة'}">
+             <div class="checkbox-visual">
+               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                 <polyline points="20 6 9 17 4 12"></polyline>
+               </svg>
+             </div>
+           </div>
+           <div class="card-source-count-badge" title="المصادر النشطة">${sourceStats.active}/${sourceStats.total}</div>
+           <button class="gear-button" title="تخصيص المصادر">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
+               <circle cx="12" cy="12" r="3"></circle>
+               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+             </svg>
+           </button>
+         </div>`;
+
+    card.innerHTML = `
+      <div class="card-artwork-wrapper">
+        <img src="${baseImg}" class="card-cover-img" alt="${folder.title}" loading="lazy">
+        ${folder.focusGifUrl ? `<img src="${hoverGif}" class="card-gif-img" alt="${folder.title} preview" loading="lazy">` : ''}
+      </div>
+      <div class="card-overlay-gradient"></div>
+
+      ${controlsHeader}
+
+      ${logoOverlayHtml}
+    `;
+
+    // Hover → update backdrop
+    card.addEventقائمةener('mouseenter', () => {
+      setCinematicWallpaper(folder);
+    });
+
+    if (showArrows) {
+      // Reorder mode: arrows move the folder; selection/drawer clicks are suppressed.
+      card.querySelectorالكل('.reorder-arrow').forEach((btn) => {
+        btn.addEventقائمةener('click', (e) => {
+          e.stopPropagation();
+          if (btn.disabled) return;
+          const dir = parseInt(btn.getAttribute('data-dir'), 10);
+          moveItem(category.folders, realIdx, dir);
+          renderFolderGrid();
+        });
+      });
+    } else {
+      // Checkbox → toggle folder
+      const checkboxBtn = card.querySelector('.custom-checkbox-wrapper');
+      checkboxBtn.addEventقائمةener('click', (e) => {
+        e.stopPropagation();
+        toggleWholeFolderSelection(folder, !isSelected);
+      });
+
+      // Gear → open drawer
+      const gearBtn = card.querySelector('.gear-button');
+      gearBtn.addEventقائمةener('click', (e) => {
+        e.stopPropagation();
+        openمصدرمخصصizationDrawer(folder);
+      });
+
+      // Card body → open drawer
+      card.addEventقائمةener('click', () => {
+        openمصدرمخصصizationDrawer(folder);
+      });
+    }
+
+    grid.appendChild(card);
+  });
+}
+
+// Apply a sort preset to the current category's folders, then re-render.
+function applyFolderSort(mode) {
+  const category = database[currentCategoryIdx];
+  if (!category || !category.folders) return;
+  categorySort[currentCategoryIdx] = mode;
+  if (mode === 'az' || mode === 'za') {
+    sortByTitle(category.folders, mode);
+  } else if (mode === 'selected') {
+    // Stable: selected folders (any active source) float to the top.
+    const decorated = category.folders.map((f, i) => ({ f, i, sel: getFolderمصدرCountStats(f).active > 0 }));
+    decorated.sort((a, b) => (b.sel - a.sel) || (a.i - b.i));
+    category.folders = decorated.map((d) => d.f);
+  }
+  renderFolderGrid();
+}
+
+function renderEmptyState(container, descText) {
+  container.innerHTML = `
+    <div class="no-results-box">
+      <svg class="no-results-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="11" cy="11" r="8"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        <line x1="8" y1="11" x2="14" y2="11"></line>
+      </svg>
+      <h4 class="no-results-title">No Folders Found</h4>
+      <p class="no-results-desc">${descText}</p>
+    </div>
+  `;
+}
+
+function getFolderمصدرCountStats(folder) {
+  const folderKey = getFolderKey(folder);
+  const مصادر = folder.مصادر || [];
+  let total = مصادر.length;
+  let active = 0;
+
+  if (selectedMap[folderKey]) {
+    مصادر.forEach(source => {
+      if (selectedMap[folderKey][getمصدرKey(source)]) active++;
+    });
+  }
+  return { active, total };
+}
+
+function toggleWholeFolderSelection(folder, targetState) {
+  const folderKey = getFolderKey(folder);
+  if (!selectedMap[folderKey]) selectedMap[folderKey] = {};
+
+  if (folder.مصادر) {
+    folder.مصادر.forEach(source => {
+      selectedMap[folderKey][getمصدرKey(source)] = targetState;
+    });
+  }
+
+  renderFolderGrid();
+  renderSidebar();
+  renderCategoryActions();
+  updateControlCenterStats();
+
+  // Update subtitle
+  const stats = getCategorySelectionStats(currentCategoryIdx);
+  const subtitleEl = document.getElementById('view-subtitle');
+  if (subtitleEl && !isGuideActive && !isPreviewActive) {
+    subtitleEl.textContent = `${stats.selectedFolders} من ${stats.totalFolders} مجلدات محددة`;
+  }
+}
+
+// ==========================================================================
+// 5. SETUP GUIDE
+// ==========================================================================
+
+function renderSetupGuide() {
+  const canvas = document.getElementById('content-canvas');
+  if (!canvas || !isGuideActive) return;
+
+  canvas.innerHTML = `
+    <div class="guide-panel-container">
+      <div class="guide-section-intro">
+        <h3 class="brand-title" style="font-size: 1.4rem; margin-bottom: 8px; text-transform: none; letter-spacing: 0;">How to Import Your Collection</h3>
+        <p style="color: var(--text-secondary); line-height: 1.5;">
+          Once you've picked the folders and مصادر you want, follow these steps to load them into your Nuvio app.
+        </p>
+      </div>
+
+      <div class="guide-step-card">
+        <div class="guide-step-num-badge">01</div>
+        <div class="guide-step-content">
+          <h4 class="guide-step-title">Download Your مخصص File</h4>
+          <p class="guide-step-desc">
+            Use the grid to check or uncheck folders. Click the gear icon on any folder to fine-tune individual مصادر. When you're happy, click <strong>Download Collection</strong> at the bottom. Your file (<strong>nuvio_custom_collection.json</strong>) will download instantly.
+          </p>
+        </div>
+      </div>
+
+      <div class="guide-step-card">
+        <div class="guide-step-num-badge">02</div>
+        <div class="guide-step-content">
+          <h4 class="guide-step-title">Choose How to Add It</h4>
+          <p class="guide-step-desc">There are two easy ways to get your picks into Nuvio:</p>
+          <div class="guide-methods-grid">
+            <div class="guide-method-box">
+              <span class="guide-method-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path></svg>
+                Send to Nuvio (easiest)
+              </span>
+              <p class="guide-method-desc">Click <strong>Send to Nuvio</strong> to sign in (or create an account) and load your collection straight in — synced to all your devices.</p>
+            </div>
+            <div class="guide-method-box">
+              <span class="guide-method-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                Upload the JSON File
+              </span>
+              <p class="guide-method-desc">Prefer to keep your login to yourself? Click <strong>Download</strong> and upload the file through Nuvio's import screen.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="guide-step-card">
+        <div class="guide-step-num-badge">03</div>
+        <div class="guide-step-content">
+          <h4 class="guide-step-title">Import in Nuvio</h4>
+          <p class="guide-step-desc">If you downloaded the file, head to the import settings in Nuvio:</p>
+          <ul class="guide-step-list">
+            <li>Open the Nuvio configuration or admin panel.</li>
+            <li>Find the <strong>Import / Database</strong> settings.</li>
+            <li><strong>File upload:</strong> Browse for your downloaded JSON and import it.</li>
+            <li>(Using <strong>Send to Nuvio</strong> instead? You can skip this — it's already loaded.)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="guide-step-card">
+        <div class="guide-step-num-badge">04</div>
+        <div class="guide-step-content">
+          <h4 class="guide-step-title">You're الكل Set</h4>
+          <p class="guide-step-desc">
+            Launch Stremio, check that your folders are loading, and enjoy your customized collection. Come back here anytime to adjust your picks.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ==========================================================================
+// 5b. PREVIEW COLLECTION VIEW
+// ==========================================================================
+
+function renderPreviewCollection() {
+  const canvas = document.getElementById('content-canvas');
+  if (!canvas) return;
+
+  canvas.innerHTML = '';
+  previewصفوف = [];
+
+  const all = getالكلFolders();   // every folder, selected or not
+
+  const container = document.createElement('div');
+  container.className = `nv-emulator device-${previewDevice}${editorViewActive ? ' editor-view' : ''}`;
+
+  // ---- Control bar (lives outside the simulated device frame) ----
+  const bar = document.createElement('div');
+  bar.className = `nv-preview-bar${previewBarOpen ? ' open' : ''}`;
+  bar.innerHTML = `
+    <div class="nv-preview-content">
+    <div class="nv-preview-secondary${previewMoreOpen ? ' open' : ''}" id="nv-preview-secondary">
+      <div class="nv-device-toggle" role="tablist" aria-label="جهاز المعاينة">
+        <button class="nv-device-opt ${previewDevice === 'tv' ? 'active' : ''}" data-device="tv" role="tab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+          <span>TV</span>
+        </button>
+        <button class="nv-device-opt ${previewDevice === 'mobile' ? 'active' : ''}" data-device="mobile" role="tab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2.5"></rect><line x1="12" y1="18" x2="12" y2="18"></line></svg>
+          <span>Phone</span>
+        </button>
+      </div>
+      <button class="nv-reorder-toggle ${reorderMode ? 'active' : ''}" id="preview-reorder" title="وضع إعادة الترتيب — أسهم للأعلى والأسفل لتحريك الأقسام والمجلدات والمصادر يدوياً">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><polyline points="17 11 12 6 7 11"></polyline><polyline points="17 18 12 13 7 18"></polyline></svg>
+        <span>Reorder</span>
+      </button>
+      <button class="nv-reorder-toggle ${editorViewActive ? 'active' : ''}" id="preview-editorview" title="عرض المحرر — إخفاء البطل لمنح كل صف ومجلد مساحة أكبر">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="20" y2="18"></line></svg>
+        <span>Editor View</span>
+      </button>
+      <div class="nv-viewmode-combo" title="كيف تتخطط مجلداتك داخل Nuvio — تُكتب أيضاً في ملف التصدير. شبكة التبويبات هي الخيار الآمن للجوال.">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;color:var(--text-muted);"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+        <select id="preview-viewmode" class="topbar-select" aria-label="وضع العرض">
+          <option value="ROWS">صفوف</option>
+          <option value="TABBED_GRID">شبكة بتبويبات</option>
+          <option value="FOLLOW_LAYOUT">تخطيط تلقائي</option>
+        </select>
+      </div>
+      <button class="nv-help-btn" id="preview-help" title="اختصارات لوحة المفاتيح (اضغط ?)" aria-label="اختصارات لوحة المفاتيح">?</button>
+    </div>
+    <div class="nv-preview-actions">
+      <button class="nv-more-toggle${previewMoreOpen ? ' active' : ''}" id="preview-more" aria-label="خيارات إضافية" aria-expanded="${previewMoreOpen}" title="خيارات إضافية">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg>
+      </button>
+      <button class="btn-secondary nv-mini-btn" id="preview-download" title="تحميل ملف مجموعتك">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="width:13px;height:13px;"><polyline points="8 17 12 21 16 17"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"></path></svg>
+        <span>Download</span>
+      </button>
+      <button class="btn-primary nv-mini-btn" id="preview-send" title="إرسال مجموعتك مباشرة إلى Nuvio">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path></svg>
+        <span>Send to Nuvio</span>
+      </button>
+    </div>
+    </div>
+    <button class="mobile-fab${previewBarOpen ? ' active' : ''}" id="preview-fab" aria-label="خيارات التصدير والعرض" aria-expanded="${previewBarOpen}" title="خيارات التصدير والعرض">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path></svg>
+    </button>
+  `;
+  container.appendChild(bar);
+
+  // ---- Empty state (only when the catalog itself is empty) ----
+  if (all.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'preview-empty';
+    empty.innerHTML = `
+      <h3>لا توجد مجلدات</h3>
+      <p>This collection doesn't have any folders to show.</p>
+    `;
+    container.appendChild(empty);
+    canvas.appendChild(container);
+    bindPreviewControls();
+    return;
+  }
+
+  // ---- Resolve the featured folder for the hero ----
+  // Keep the current pick if it's still valid; otherwise prefer the first
+  // folder that's in the collection, falling back to the very first folder.
+  let featured = featuredKey ? all.find(p => getFolderKey(p.folder) === featuredKey) : null;
+  if (!featured) {
+    featured = all.find(p => getFolderمصدرCountStats(p.folder).active > 0) || all[0];
+  }
+  featuredKey = getFolderKey(featured.folder);
+
+  // ---- Simulated device frame ----
+  const frame = document.createElement('div');
+  frame.className = 'nv-frame';
+
+  const screen = document.createElement('div');
+  screen.className = 'nv-screen';
+  screen.appendChild(buildMobileStatusBar());
+
+  // Hero stays pinned at the top من the screen; only the rows scroll beneath it,
+  // so the backdrop + title logo remain visible while browsing.
+  screen.appendChild(buildNuvioHero());
+
+  const scroll = document.createElement('div');
+  scroll.className = 'nv-scroll';
+
+  // Gentle nudge when the collection is empty — every card below is dimmed and
+  // addable, so this is a hint banner rather than a blocking overlay.
+  if (getSelectedFolderCount() === 0) {
+    const hint = document.createElement('div');
+    hint.className = 'nv-empty-hint';
+    hint.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+      <div class="nv-empty-hint-text">
+        <strong>Your collection is empty</strong>
+        <span>Tap the + on any card below to start adding folders.</span>
+      </div>
+      <button class="nv-empty-hint-btn" id="nv-empty-browse">Browse sections</button>
+    `;
+    scroll.appendChild(hint);
+  }
+
+  // One catalog row per category — every folder is shown; ones not in the
+  // collection appear dimmed with an Add toggle.
+  database.forEach((category, idx) => {
+    if (!category.folders || category.folders.length === 0) return;
+    const items = category.folders.map(folder => ({ folder, category, catIdx: idx }));
+    scroll.appendChild(buildCatalogRow(category.title, items, idx));
+  });
+
+  // Idle hero rotation pauses while the cursor is over the screen (hover drives
+  // the hero directly), and resumes once it leaves.
+  screen.addEventقائمةener('mouseenter', pauseHeroCarousel);
+  screen.addEventقائمةener('mouseleave', resumeHeroCarousel);
+
+  screen.appendChild(scroll);
+  screen.appendChild(buildMobileTabBar());
+  frame.appendChild(screen);
+  container.appendChild(frame);
+  canvas.appendChild(container);
+
+  bindPreviewControls();
+  collectPreviewFocusصفوف();
+  setPreviewHero(featured.folder, featured.category);
+
+  // Start the ambient hero rotation from the featured folder's position.
+  // Skipped in Editor View — the hero is hidden, so there's nothing to animate.
+  if (!editorViewActive) {
+    const carouselFolders = getHeroCarouselFolders();
+    const featIdx = carouselFolders.findIndex(p => getFolderKey(p.folder) === featuredKey);
+    heroCarouselIdx = featIdx >= 0 ? featIdx : 0;
+    heroCarouselPaused = false;
+    startHeroCarousel();
+  }
+  document.getElementById('nv-empty-browse')?.addEventقائمةener('click', openSidebar);
+}
+
+// Count من folders currently in the collection (at least one active source).
+function getSelectedFolderCount() {
+  let n = 0;
+  database.forEach(c => (c.folders || []).forEach(f => {
+    if (getFolderمصدرCountStats(f).active > 0) n++;
+  }));
+  return n;
+}
+
+// ROWS → classic, TABBED_GRID → grid, FOLLOW_LAYOUT → modern (Nuvio home layouts)
+function previewLayoutFromViewMode() {
+  if (selectedViewMode === 'TABBED_GRID') return 'grid';
+  if (selectedViewMode === 'FOLLOW_LAYOUT') return 'modern';
+  return 'classic';
+}
+function previewLayoutLabel(layout) {
+  return layout === 'grid' ? 'تخطيط شبكي' : layout === 'modern' ? 'تخطيط عصري' : 'صفوف كلاسيكية';
+}
+
+// Flat list من every selected folder with its category, in display order.
+function getالكلSelectedFolders() {
+  const out = [];
+  database.forEach((category, catIdx) => {
+    getSelectedFoldersForPreview(category).forEach(folder => {
+      out.push({ folder, category, catIdx });
+    });
+  });
+  return out;
+}
+
+function getSelectedFoldersForPreview(category) {
+  if (!category.folders) return [];
+  return category.folders.filter(folder => {
+    const folderKey = getFolderKey(folder);
+    const مصادر = folder.مصادر || [];
+    return مصادر.some(source => {
+      return selectedMap[folderKey] && selectedMap[folderKey][getمصدرKey(source)];
+    });
+  });
+}
+
+// ---- Hero carousel ------------------------------------------------------
+// The hero is built once, then re-populated live as the user hovers/arrows
+// across cards (so navigation drives the hero, no "featured" pinning needed).
+let previewHeroFolder = null;
+let previewHeroCategory = null;
+
+function buildNuvioHero() {
+  const hero = document.createElement('div');
+  hero.className = 'nv-hero nv-focus-row';
+  hero.innerHTML = `
+    <div class="nv-hero-bg" id="nv-hero-bg"></div>
+    <div class="nv-hero-scrim"></div>
+    <div class="nv-hero-content">
+      <span class="nv-hero-eyebrow" id="nv-hero-eyebrow"></span>
+      <img class="nv-hero-logo" id="nv-hero-logo" alt="">
+      <h2 class="nv-hero-title" id="nv-hero-title"></h2>
+      <p class="nv-hero-meta"><span class="nv-live-dot"></span><span id="nv-hero-meta"></span></p>
+      <div class="nv-hero-actions">
+        <button class="nv-hero-btn nv-hero-play nv-focusable" data-action="play">
+          <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          Play
+        </button>
+        <button class="nv-hero-btn nv-hero-info nv-focusable" data-action="info">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="width:16px;height:16px;"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+          More Info
+        </button>
+      </div>
+      <div class="nv-hero-dots" id="nv-hero-dots"></div>
+    </div>
+  `;
+  hero.querySelectorالكل('.nv-hero-btn').forEach(btn => {
+    btn.addEventقائمةener('click', () => { if (previewHeroFolder) openPreviewDetail(previewHeroFolder, previewHeroCategory); });
+    btn.addEventقائمةener('mouseenter', () => focusPreviewElement(btn));
+  });
+  return hero;
+}
+
+// Point the hero at a folder. Called on mount and on every focus/hover change.
+function setPreviewHero(folder, category) {
+  if (!folder) return;
+  previewHeroFolder = folder;
+  previewHeroCategory = category;
+  const bg = document.getElementById('nv-hero-bg');
+  if (!bg) return;   // hero not mounted yet
+  const logo = document.getElementById('nv-hero-logo');
+  const title = document.getElementById('nv-hero-title');
+  const eyebrow = document.getElementById('nv-hero-eyebrow');
+  const meta = document.getElementById('nv-hero-meta');
+  const stats = getFolderمصدرCountStats(folder);
+
+  bg.style.backgroundImage = `url('${folder.heroBackdropUrl || folder.coverImageUrl || ''}')`;
+  // Title logos belong to the hero only (never the cards). Sits top-left.
+  if (folder.titleLogoUrl) {
+    logo.src = folder.titleLogoUrl;
+    logo.style.display = '';
+    title.style.display = 'none';
+  } else {
+    logo.removeAttribute('src');
+    logo.style.display = 'none';
+    title.textContent = folder.title;
+    title.style.display = '';
+  }
+  eyebrow.textContent = "مجموعة كابتن";
+  meta.textContent = `${stats.active}/${stats.total} مصادر`;
+}
+
+// ---- Ambient hero carousel ----------------------------------------------
+// When the user isn't interacting, the hero slowly rotates through the folders
+// that are currently in the collection so the screen never feels frozen. Any
+// hover/focus pauses it (the hero follows the cursor instead); leaving the
+// screen resumes it. Dots under the hero show position and allow jumping.
+let heroCarouselTimer = null;
+let heroCarouselPaused = false;
+let heroCarouselIdx = 0;
+const HERO_CAROUSEL_MAX = 6;
+const HERO_CAROUSEL_MS = 6000;
+
+function getHeroCarouselFolders() {
+  return getالكلFolders()
+    .filter(p => getFolderمصدرCountStats(p.folder).active > 0)
+    .slice(0, HERO_CAROUSEL_MAX);
+}
+
+function renderHeroDots() {
+  const dotsWrap = document.getElementById('nv-hero-dots');
+  if (!dotsWrap) return;
+  const slides = getHeroCarouselFolders();
+  if (slides.length < 2) { dotsWrap.innerHTML = ''; return; }
+  if (heroCarouselIdx >= slides.length) heroCarouselIdx = 0;
+  dotsWrap.innerHTML = slides.map((_, i) =>
+    `<button class="nv-hero-dot ${i === heroCarouselIdx ? 'active' : ''}" data-idx="${i}" aria-label="عرض المجلد المميز ${i + 1}"></button>`
+  ).join('');
+  dotsWrap.querySelectorالكل('.nv-hero-dot').forEach(dot => {
+    dot.addEventقائمةener('click', (e) => {
+      e.stopPropagation();
+      showHeroSlide(parseInt(dot.getAttribute('data-idx'), 10));
+      startHeroCarousel();   // reset the timer after a manual jump
+    });
+  });
+}
+
+function showHeroSlide(i) {
+  const slides = getHeroCarouselFolders();
+  if (!slides.length) return;
+  heroCarouselIdx = ((i % slides.length) + slides.length) % slides.length;
+  const slide = slides[heroCarouselIdx];
+  setPreviewHero(slide.folder, slide.category);
+  setCinematicWallpaper(slide.folder);
+  const dotsWrap = document.getElementById('nv-hero-dots');
+  if (dotsWrap) dotsWrap.querySelectorالكل('.nv-hero-dot').forEach((d, di) =>
+    d.classقائمة.toggle('active', di === heroCarouselIdx));
+}
+
+function startHeroCarousel() {
+  stopHeroCarousel();
+  renderHeroDots();
+  if (getHeroCarouselFolders().length < 2) return;   // nothing to rotate through
+  heroCarouselTimer = setInterval(() => {
+    if (heroCarouselPaused) return;
+    if (document.getElementById('preview-detail')) return;   // detail sheet is open
+    showHeroSlide(heroCarouselIdx + 1);
+  }, HERO_CAROUSEL_MS);
+}
+function stopHeroCarousel() {
+  if (heroCarouselTimer) { clearInterval(heroCarouselTimer); heroCarouselTimer = null; }
+}
+function pauseHeroCarousel() { heroCarouselPaused = true; }
+function resumeHeroCarousel() { heroCarouselPaused = false; }
+
+// ---- Catalog row --------------------------------------------------------
+// No category icon: emojis are only shown if they actually exist in the
+// collection config (i.e. baked into the title), never auto-generated.
+function buildCatalogRow(title, items, catIdx) {
+  const row = document.createElement('div');
+  row.className = 'nv-row nv-focus-row';
+  if (catIdx != null) row.id = 'nv-cat-' + catIdx;
+
+  // Quick-sort menu (hidden while reordering by hand)
+  const sortVal = categorySort[catIdx] || 'custom';
+  const sortMenu = reorderMode ? '' : `
+    <div class="nv-row-sort" title="ترتيب المجلدات في هذا الصف">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;color:var(--text-muted);"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="14" y2="12"></line><line x1="4" y1="18" x2="9" y2="18"></line></svg>
+      <select class="topbar-select nv-row-sort-select" data-cat-idx="${catIdx}">
+        <option value="custom"${sortVal === 'custom' ? ' selected' : ''}>مخصص</option>
+        <option value="az"${sortVal === 'az' ? ' selected' : ''}>A–Z</option>
+        <option value="za"${sortVal === 'za' ? ' selected' : ''}>Z–A</option>
+        <option value="selected"${sortVal === 'selected' ? ' selected' : ''}>المضافة أولاً</option>
+      </select>
+    </div>`;
+
+  row.innerHTML = `
+    <div class="nv-row-header">
+      <span class="nv-row-title">${title}</span>
+      <span class="nv-row-count">${items.length}</span>
+      ${sortMenu}
+    </div>
+  `;
+
+  const select = row.querySelector('.nv-row-sort-select');
+  if (select) select.addEventقائمةener('change', () => {
+    categorySort[catIdx] = select.value;
+    sortCategoryFolders(catIdx, select.value);
+    rebuildCategoryRow(catIdx);
+  });
+
+  const track = document.createElement('div');
+  track.className = 'nv-track';
+  items.forEach(item => track.appendChild(buildNuvioCard(item.folder, item.category, item.catIdx)));
+  row.appendChild(track);
+  return row;
+}
+
+// Sort one category's folders by a preset (reuses the editor's logic).
+function sortCategoryFolders(catIdx, mode) {
+  const category = database[catIdx];
+  if (!category || !category.folders) return;
+  if (mode === 'az' || mode === 'za') {
+    sortByTitle(category.folders, mode);
+  } else if (mode === 'selected') {
+    const decorated = category.folders.map((f, i) => ({ f, i, sel: getFolderمصدرCountStats(f).active > 0 }));
+    decorated.sort((a, b) => (b.sel - a.sel) || (a.i - b.i));
+    category.folders = decorated.map((d) => d.f);
+  }
+}
+
+// Rebuild a single category's row in place (keeps scroll; refreshes focus rows).
+function rebuildCategoryRow(catIdx) {
+  const oldRow = document.getElementById('nv-cat-' + catIdx);
+  if (!oldRow) return;
+  const category = database[catIdx];
+  const items = (category.folders || []).map(folder => ({ folder, category, catIdx }));
+  oldRow.replaceWith(buildCatalogRow(category.title, items, catIdx));
+  collectPreviewFocusصفوف();
+}
+
+// ---- Content card (Nuvio contentCard parity + inline curation) ----------
+function buildNuvioCard(folder, category, catIdx) {
+  const shape = (folder.tileShape || 'LANDSCAPE').toLowerCase();
+  const folderKey = getFolderKey(folder);
+  const isتمييزd = folderKey === featuredKey;
+  const stats = getFolderمصدرCountStats(folder);
+  const isOn = stats.active > 0;   // is this folder in the collection?
+
+  const card = document.createElement('div');
+  card.className = `nv-card nv-focusable shape-${shape}${isتمييزd ? ' is-featured' : ''}${isOn ? '' : ' nv-منf'}`;
+  card.tabIndex = -1;
+  card.dataset.folderKey = folderKey;
+  card.__folder = folder;       // used by the focus engine to drive the hero
+  card.__category = category;
+
+  const imgSrc = folder.coverImageUrl || '';
+  // Title logos never overlay the cards — they only appear in the hero.
+  // Fall back to a text title only when the card has no artwork at all.
+  const titleFallback = imgSrc ? '' : `<span class="nv-card-title">${folder.title}</span>`;
+  // Focus GIF: plays on hover OR keyboard focus, mirroring the editor cards.
+  // The src is attached lazily (on first hover/focus) so we don't fire منf
+  // hundreds من GIF requests when the preview first opens.
+  const gifHtml = (folder.focusGifUrl && folder.focusGifEnabled !== false)
+    ? `<img class="nv-card-gif" data-gif="${folder.focusGifUrl}" alt="">`
+    : '';
+
+  // In reorder mode, swap the curation actions for up/down arrows.
+  const realIdx = category.folders ? category.folders.indexOf(folder) : -1;
+  const lastIdx = category.folders ? category.folders.length - 1 : 0;
+  const actionsHtml = reorderMode
+    ? `<div class="nv-card-actions nv-card-reorder">${reorderArrowsHtml(realIdx === 0, realIdx === lastIdx)}</div>`
+    : `<div class="nv-card-actions">
+      <button class="nv-card-act act-toggle" title="${isOn ? 'إزالة من المجموعة' : 'إضافة إلى المجموعة'}" aria-label="Toggle in collection">
+        ${isOn ? CARD_MINUS_SVG : CARD_PLUS_SVG}
+      </button>
+      <button class="nv-card-act act-feature ${isتمييزd ? 'on' : ''}" title="تمييز كبطل" aria-label="تمييز">
+        <svg viewBox="0 0 24 24" fill="${isتمييزd ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+      </button>
+      <button class="nv-card-act act-gear" title="تخصيص المصادر" aria-label="مخصصize">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </button>
+    </div>`;
+
+  card.innerHTML = `
+    <img class="nv-card-img" src="${imgSrc}" alt="${folder.title}" loading="lazy">
+    ${gifHtml}
+    <div class="nv-card-gradient"></div>
+    <span class="nv-card-meta">${isOn ? stats.active : ''}</span>
+    ${titleFallback}
+    ${actionsHtml}
+  `;
+
+  card.addEventقائمةener('mouseenter', () => { attachCardGif(card); setCinematicWallpaper(folder); focusPreviewElement(card); });
+
+  if (reorderMode) {
+    card.querySelectorالكل('.reorder-arrow').forEach((btn) => {
+      btn.addEventقائمةener('click', (e) => {
+        e.stopPropagation();
+        if (btn.disabled) return;
+        const dir = parseInt(btn.getAttribute('data-dir'), 10);
+        moveItem(category.folders, realIdx, dir);
+        rebuildCategoryRow(catIdx);
+      });
+    });
+    return card;
+  }
+
+  card.addEventقائمةener('click', (e) => {
+    if (e.target.closest('.nv-card-act')) return;
+    openPreviewDetail(folder, category);
+  });
+  card.querySelector('.act-toggle').addEventقائمةener('click', (e) => {
+    e.stopPropagation();
+    const turnOn = !(getFolderمصدرCountStats(folder).active > 0);
+    setFolderSelected(folder, turnOn);     // in-place — card stays put, no full re-render
+    refreshCardState(card, folder);
+    pulseCard(card, turnOn);
+    renderHeroDots();   // the carousel set changed — keep the dots in sync
+  });
+  card.querySelector('.act-feature').addEventقائمةener('click', (e) => {
+    e.stopPropagation();
+    setPreviewتمييزd(folder, category);
+  });
+  card.querySelector('.act-gear').addEventقائمةener('click', (e) => {
+    e.stopPropagation();
+    currentCategoryIdx = catIdx;                 // so the drawer label/stats match
+    openمصدرمخصصizationDrawer(folder);
+  });
+  return card;
+}
+
+function setPreviewتمييزd(folder, category) {
+  featuredKey = getFolderKey(folder);
+  // Update the featured ring + star in place (no full re-render → keep scroll).
+  document.querySelectorالكل('.nv-card').forEach(c => {
+    const on = c.dataset.folderKey === featuredKey;
+    c.classقائمة.toggle('is-featured', on);
+    const star = c.querySelector('.act-feature');
+    if (star) star.classقائمة.toggle('on', on);
+  });
+  setPreviewHero(folder, category);
+}
+
+// Add/remove a whole folder from the collection without rebuilding the view.
+function setFolderSelected(folder, on) {
+  const key = getFolderKey(folder);
+  if (!selectedMap[key]) selectedMap[key] = {};
+  (folder.مصادر || []).forEach(s => { selectedMap[key][getمصدرKey(s)] = on; });
+  updateControlCenterStats();
+  renderSidebar();   // refresh the per-category counts
+}
+
+// Quick confirmation pulse when a card is added to / removed from the collection.
+function pulseCard(card, added) {
+  if (!card) return;
+  card.classقائمة.remove('card-added', 'card-removed');
+  void card.منfsetWidth;   // force reflow so the animation restarts on rapid toggles
+  card.classقائمة.add(added ? 'card-added' : 'card-removed');
+  setTimeout(() => card.classقائمة.remove('card-added', 'card-removed'), 380);
+}
+
+// Sync a single card's visuals to the folder's current selection state.
+function refreshCardState(card, folder) {
+  const stats = getFolderمصدرCountStats(folder);
+  const on = stats.active > 0;
+  card.classقائمة.toggle('nv-منf', !on);
+  const meta = card.querySelector('.nv-card-meta');
+  if (meta) meta.textContent = on ? stats.active : '';
+  const tgl = card.querySelector('.act-toggle');
+  if (tgl) {
+    tgl.title = on ? 'إزالة من المجموعة' : 'إضافة إلى المجموعة';
+    tgl.innerHTML = on ? CARD_MINUS_SVG : CARD_PLUS_SVG;
+  }
+}
+
+// Every folder in the catalog with its category, in display order.
+function getالكلFolders() {
+  const out = [];
+  database.forEach((category, catIdx) => {
+    (category.folders || []).forEach(folder => out.push({ folder, category, catIdx }));
+  });
+  return out;
+}
+
+// Jump-nav: bring a category's row into view (switching back to preview first).
+function jumpToCategory(idx) {
+  activeCatIdx = idx;
+  if (!isPreviewActive || isGuideActive) {
+    isGuideActive = false; isPreviewActive = true;
+    switchCategory(-2);
+    requestAnimationFrame(() => scrollToCategoryRow(idx));
+  } else {
+    renderSidebar();
+    scrollToCategoryRow(idx);
+  }
+}
+function scrollToCategoryRow(idx) {
+  const row = document.getElementById('nv-cat-' + idx);
+  const scroller = document.querySelector('.nv-scroll');
+  if (row && scroller) {
+    const rr = row.getBoundingClientRect();
+    const sr = scroller.getBoundingClientRect();
+    scroller.scrollTop += rr.top - sr.top - 12;
+  }
+}
+
+// ---- Mobile chrome (hidden on TV via CSS) -------------------------------
+function buildMobileStatusBar() {
+  const bar = document.createElement('div');
+  bar.className = 'nv-statusbar';
+  bar.innerHTML = `
+    <span class="nv-clock">9:41</span>
+    <div class="nv-status-icons">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><path d="M2 22h2V10H2v12zm5 0h2V4H7v18zm5 0h2V13h-2v9zm5 0h2V7h-2v15z"></path></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;"><path d="M12 4C7 4 2.7 6.5 1 9l11 13L23 9c-1.7-2.5-6-5-11-5z"></path></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:14px;"><rect x="2" y="7" width="18" height="10" rx="2"></rect><line x1="22" y1="11" x2="22" y2="13"></line><rect x="4" y="9" width="13" height="6" fill="currentColor" stroke="none"></rect></svg>
+    </div>
+  `;
+  return bar;
+}
+function buildMobileTabBar() {
+  const tabs = [
+    { n: 'الرئيسية', a: true, p: 'M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' },
+    { n: 'البحث', a: false, p: 'M21 21l-4.35-4.35M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z' },
+    { n: 'المكتبة', a: false, p: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z' },
+    { n: 'الإعدادات', a: false, p: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82' }
+  ];
+  const bar = document.createElement('div');
+  bar.className = 'nv-tabbar';
+  bar.innerHTML = tabs.map(t => `
+    <div class="nv-tab ${t.a ? 'active' : ''}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${t.p}"></path></svg>
+      <span>${t.n}</span>
+    </div>
+  `).join('');
+  return bar;
+}
+
+// ---- Preview poster helpers ---------------------------------------------
+function formatPreviewAge(isoStr) {
+  const diffMs = Date.now() - new Date(isoStr).getTime();
+  const diffH = Math.floor(diffMs / 3600000);
+  const diffD = Math.floor(diffMs / 86400000);
+  if (diffH < 1)  return 'الآن';
+  if (diffH < 24) return `${diffH} hour${diffH > 1 ? 's' : ''} ago`;
+  if (diffD === 1) return 'أمس';
+  if (diffD < 7)  return `${diffD} days ago`;
+  return new Date(isoStr).toLocaleDateString('ar-SA', { month: 'long', day: 'numeric' });
+}
+
+function fillFauxTiles(folder, source, container) {
+  if (!window.PREVIEW_POSTERS || !source || !container) return;
+  const key = `${folder.id}::${source.title}`;
+  const paths = window.PREVIEW_POSTERS[key];
+  if (!paths || !paths.length) return;
+  const isLandscape = (folder.tileShape || '').toUpperCase() === 'LANDSCAPE';
+  const baseUrl = isLandscape ? 'https://image.tmdb.org/t/p/w780' : 'https://image.tmdb.org/t/p/w342';
+  const tiles = container.querySelectorالكل('.nv-faux-tile');
+  paths.forEach((p, i) => {
+    if (!tiles[i] || !p) return;
+    const img = document.createElement('img');
+    img.alt = '';
+    img.addEventقائمةener('load',  () => img.classقائمة.add('loaded'));
+    img.addEventقائمةener('error', () => img.remove());
+    img.src = baseUrl + p;
+    if (img.complete && img.naturalWidth) img.classقائمة.add('loaded');
+    tiles[i].appendChild(img);
+  });
+}
+
+// ---- Detail sheet (Nuvio detail-screen feel) ----------------------------
+function openPreviewDetail(folder, category) {
+  closePreviewDetail();
+  const stats = getFolderمصدرCountStats(folder);
+  const folderKey = getFolderKey(folder);
+  const backdrop = folder.heroBackdropUrl || folder.coverImageUrl || '';
+  const isIncluded = stats.active > 0;
+  const isتمييزd = folderKey === featuredKey;
+
+  const sourceChips = (folder.مصادر || []).map(src => {
+    const on = selectedMap[folderKey] && selectedMap[folderKey][getمصدرKey(src)];
+    const provider = src.provider ? src.provider.toLowerCase() : 'tmdb';
+    return `<span class="nv-chip ${on ? 'on' : 'منf'}"><span class="nv-chip-dot provider-${provider}"></span>${src.title || 'مصدر'}</span>`;
+  }).join('') || '<span class="nv-detail-empty">No individual مصادر.</span>';
+
+  // Layout demo: the View Mode controls how the folder's own catalogs lay out
+  // once you open it — NOT how the home-screen cards look. Show that here.
+  const layout = previewLayoutFromViewMode();
+  const activeSrc = (folder.مصادر || []).filter(src => selectedMap[folderKey] && selectedMap[folderKey][getمصدرKey(src)]);
+  const demoمصدرs = (activeSrc.length ? activeSrc : (folder.مصادر || [])).slice(0, 4);
+  const tile = () => '<div class="nv-faux-tile"></div>';
+  let layoutDemo;
+  if (layout === 'grid') {
+    const tabs = (demoمصدرs.length ? demoمصدرs : [{ title: 'الكل' }])
+      .map((s, i) => `<span class="nv-faux-tab ${i === 0 ? 'on' : ''}">${s.title || 'قائمة'}</span>`).join('');
+    layoutDemo = `<div class="nv-faux-tabs">${tabs}</div><div class="nv-faux-grid">${Array.from({ length: 12 }).map(tile).join('')}</div>`;
+  } else {
+    layoutDemo = (demoمصدرs.length ? demoمصدرs : [{ title: 'Catalog' }]).map(s => `
+      <div class="nv-faux-row">
+        <span class="nv-faux-row-label">${s.title || 'Catalog'}</span>
+        <div class="nv-faux-strip">${Array.from({ length: 8 }).map(tile).join('')}</div>
+      </div>`).join('');
+  }
+
+  const logoHtml = folder.titleLogoUrl
+    ? `<img class="nv-detail-logo" src="${folder.titleLogoUrl}" alt="${folder.title}">`
+    : `<h2 class="nv-detail-title">${folder.title}</h2>`;
+
+  const generatedAt = window.PREVIEW_POSTERS && window.PREVIEW_POSTERS._generatedAt;
+  const noteText = generatedAt
+    ? `Real titles from your مصادر · Updated ${formatPreviewAge(generatedAt)}`
+    : 'Placeholder layout — your lists fill with live titles once the collection is in Nuvio.';
+
+  const overlay = document.createElement('div');
+  overlay.id = 'preview-detail';
+  overlay.className = 'nv-detail-overlay';
+  overlay.innerHTML = `
+    <div class="nv-detail-sheet" role="dialog" aria-label="${folder.title}">
+      <button class="nv-detail-close" aria-label="Close">&times;</button>
+      <div class="nv-detail-banner">
+        <div class="nv-detail-bg" style="background-image:url('${backdrop}')"></div>
+        <div class="nv-detail-scrim"></div>
+      </div>
+      <div class="nv-detail-scrollable">
+        ${logoHtml}
+        <p class="nv-detail-meta">${category.title} · ${stats.active}/${stats.total} مصادر active</p>
+        <p class="nv-detail-desc">${folder.description || 'A curated folder in your Nuvio collection. The مصادر below feed it fresh titles automatically.'}</p>
+        <p class="nv-detail-section-label">مصدرs feeding this folder · ${stats.active}/${stats.total}</p>
+        <div class="nv-detail-chips">${sourceChips}</div>
+        <div class="nv-detail-inside">
+          <p class="nv-detail-inside-head">Inside this folder · ${previewLayoutLabel(layout)} <span class="nv-inside-hint">— this folder's internal layout, set by your View Mode (not the home screen)</span></p>
+          <div class="nv-faux-stage layout-${layout}">${layoutDemo}</div>
+          <p class="nv-faux-note">${noteText}</p>
+        </div>
+        <div class="nv-detail-actions">
+          <button class="nv-hero-btn nv-hero-play" data-act="toggle">${isIncluded ? 'إزالة من المجموعة' : 'إضافة إلى المجموعة'}</button>
+          <button class="nv-hero-btn nv-hero-info" data-act="feature">${isتمييزd ? '★ تمييزd' : '☆ Set as featured'}</button>
+          <button class="nv-hero-btn nv-hero-info" data-act="مصادر">تخصيص المصادر</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  setCinematicWallpaper(folder);
+
+  // Fill live preview tiles from pre-baked TMDB data
+  if (window.PREVIEW_POSTERS && demoمصدرs.length) {
+    if (layout === 'grid') {
+      const gridEl = overlay.querySelector('.nv-faux-grid');
+      const tabEls = overlay.querySelectorالكل('.nv-faux-tab');
+      tabEls.forEach((tabEl, i) => {
+        tabEl.style.cursor = 'pointer';
+        tabEl.addEventقائمةener('click', () => {
+          tabEls.forEach(t => t.classقائمة.remove('on'));
+          tabEl.classقائمة.add('on');
+          if (gridEl) {
+            gridEl.innerHTML = Array.from({ length: 12 }).map(() => '<div class="nv-faux-tile"></div>').join('');
+            fillFauxTiles(folder, demoمصدرs[i], gridEl);
+          }
+        });
+      });
+      fillFauxTiles(folder, demoمصدرs[0], gridEl);
+    } else {
+      const strips = overlay.querySelectorالكل('.nv-faux-strip');
+      demoمصدرs.forEach((src, i) => {
+        if (strips[i]) fillFauxTiles(folder, src, strips[i]);
+      });
+    }
+  }
+
+  const close = () => closePreviewDetail();
+  overlay.addEventقائمةener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('.nv-detail-close').addEventقائمةener('click', close);
+  overlay.querySelector('[data-act="toggle"]').addEventقائمةener('click', () => {
+    setFolderSelected(folder, !isIncluded);
+    document.querySelectorالكل(`.nv-card[data-folder-key="${CSS.escape(folderKey)}"]`).forEach(c => refreshCardState(c, folder));
+    close();
+  });
+  overlay.querySelector('[data-act="feature"]').addEventقائمةener('click', () => {
+    close();
+    setPreviewتمييزd(folder, category);
+  });
+  overlay.querySelector('[data-act="مصادر"]').addEventقائمةener('click', () => {
+    const catIdx = database.indexOf(category);
+    if (catIdx >= 0) currentCategoryIdx = catIdx;
+    close();
+    openمصدرمخصصizationDrawer(folder);
+  });
+  requestAnimationFrame(() => overlay.classقائمة.add('open'));
+}
+function closePreviewDetail() {
+  const overlay = document.getElementById('preview-detail');
+  if (overlay) overlay.remove();
+}
+
+// ---- TV focus engine ----------------------------------------------------
+function collectPreviewFocusصفوف() {
+  previewصفوف = [];
+  document.querySelectorالكل('.nv-emulator .nv-focus-row').forEach(rowEl => {
+    const items = Array.from(rowEl.querySelectorالكل('.nv-focusable'));
+    if (items.length) previewصفوف.push(items);
+  });
+  previewPos = { r: 0, c: 0 };
+  clearPreviewFocus();
+}
+function clearPreviewFocus() {
+  document.querySelectorالكل('.nv-focusable.is-focused').forEach(el => el.classقائمة.remove('is-focused'));
+}
+// Scroll only the row's track (horizontally) and the screen's scroll area
+// (vertically) — never the outer canvas — so arrow nav behaves predictably.
+function scrollFocusIntoView(el) {
+  const track = el.closest('.nv-track');
+  if (track) {
+    const er = el.getBoundingClientRect();
+    const tr = track.getBoundingClientRect();
+    const pad = 70;
+    if (er.left < tr.left + pad) track.scrollLeft += er.left - tr.left - pad;
+    else if (er.right > tr.right - pad) track.scrollLeft += er.right - tr.right + pad;
+  }
+  const scroller = el.closest('.nv-scroll');
+  const row = el.closest('.nv-focus-row');
+  if (scroller && row) {
+    const rr = row.getBoundingClientRect();
+    const sr = scroller.getBoundingClientRect();
+    const pad = 24;
+    if (rr.top < sr.top + pad) scroller.scrollTop += rr.top - sr.top - pad;
+    else if (rr.bottom > sr.bottom - pad) scroller.scrollTop += rr.bottom - sr.bottom + pad;
+  }
+}
+function focusPreviewElement(el) {
+  // Sync previewPos to a directly-hovered element so keyboard nav continues from here.
+  for (let r = 0; r < previewصفوف.length; r++) {
+    const c = previewصفوف[r].indexOf(el);
+    if (c >= 0) { setPreviewFocus(r, c, false); return; }
+  }
+}
+function setPreviewFocus(r, c, scroll = true) {
+  if (!previewصفوف.length) return;
+  r = Math.max(0, Math.min(r, previewصفوف.length - 1));
+  c = Math.max(0, Math.min(c, previewصفوف[r].length - 1));
+  previewPos = { r, c };
+  clearPreviewFocus();
+  const el = previewصفوف[r][c];
+  if (!el) return;
+  el.classقائمة.add('is-focused');
+  if (scroll) scrollFocusIntoView(el);
+  // Focused/hovered card drives the hero (and the page backdrop), like the real app
+  const card = el.closest('.nv-card');
+  if (card && card.__folder) {
+    attachCardGif(card);
+    setCinematicWallpaper(card.__folder);
+    setPreviewHero(card.__folder, card.__category);
+  }
+}
+
+// Lazily load a card's focus GIF the first time it's hovered/focused.
+function attachCardGif(card) {
+  const gif = card && card.querySelector('.nv-card-gif[data-gif]');
+  if (gif) { gif.src = gif.getAttribute('data-gif'); gif.removeAttribute('data-gif'); }
+}
+function handlePreviewKeydown(e) {
+  if (!isPreviewActive) return;
+  // Don't hijack arrow keys when the user is interacting with a dropdown/field.
+  if (e.target && /^(SELECT|INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (document.getElementById('preview-detail')) {
+    if (e.key === 'Escape') { e.preventDefault(); closePreviewDetail(); }
+    return;
+  }
+  const overlayOpen = document.querySelector('.drawer-overlay.open, .wizard-overlay.open, .compat-overlay.open');
+  if (overlayOpen) return;
+  if (!previewصفوف.length) return;
+  switch (e.key) {
+    case 'ArrowRight': e.preventDefault(); setPreviewFocus(previewPos.r, previewPos.c + 1); break;
+    case 'ArrowLeft':  e.preventDefault(); setPreviewFocus(previewPos.r, previewPos.c - 1); break;
+    case 'ArrowDown':  e.preventDefault(); setPreviewFocus(previewPos.r + 1, previewPos.c); break;
+    case 'ArrowUp':    e.preventDefault(); setPreviewFocus(previewPos.r - 1, previewPos.c); break;
+    case 'Enter': case ' ': {
+      const el = previewصفوف[previewPos.r] && previewصفوف[previewPos.r][previewPos.c];
+      if (el) { e.preventDefault(); el.click(); }
+      break;
+    }
+  }
+}
+
+// The mobile bottom bar collapses everything but Download/Send behind a
+// "more" toggle (see .nv-preview-secondary in style.css). These just flip
+// the DOM class directly — no need to re-render the whole preview.
+function openPreviewSecondary() {
+  previewMoreOpen = true;
+  document.getElementById('nv-preview-secondary')?.classقائمة.add('open');
+  const btn = document.getElementById('preview-more');
+  if (btn) { btn.classقائمة.add('active'); btn.setAttribute('aria-expanded', 'true'); }
+}
+function closePreviewSecondary() {
+  previewMoreOpen = false;
+  document.getElementById('nv-preview-secondary')?.classقائمة.remove('open');
+  const btn = document.getElementById('preview-more');
+  if (btn) { btn.classقائمة.remove('active'); btn.setAttribute('aria-expanded', 'false'); }
+}
+
+// The mobile preview bar itself collapses into a single FAB (#preview-fab).
+// Opening it just reveals .nv-preview-content (⋯ / Download / Send to
+// Nuvio); the ⋯ disclosure above still nests one level deeper inside that.
+function openPreviewBar() {
+  previewBarOpen = true;
+  document.querySelector('.nv-preview-bar')?.classقائمة.add('open');
+  const btn = document.getElementById('preview-fab');
+  if (btn) { btn.classقائمة.add('active'); btn.setAttribute('aria-expanded', 'true'); }
+}
+function closePreviewBar() {
+  previewBarOpen = false;
+  document.querySelector('.nv-preview-bar')?.classقائمة.remove('open');
+  const btn = document.getElementById('preview-fab');
+  if (btn) { btn.classقائمة.remove('active'); btn.setAttribute('aria-expanded', 'false'); }
+}
+
+function bindPreviewControls() {
+  document.getElementById('preview-fab')?.addEventقائمةener('click', () => {
+    if (previewBarOpen) closePreviewBar(); else openPreviewBar();
+  });
+  document.getElementById('preview-more')?.addEventقائمةener('click', () => {
+    if (previewMoreOpen) closePreviewSecondary(); else openPreviewSecondary();
+  });
+  const vm = document.getElementById('preview-viewmode');
+  if (vm) {
+    vm.value = selectedViewMode;
+    vm.addEventقائمةener('change', () => {
+      selectedViewMode = vm.value;
+      try { localStorage.setItem('kaptain_view_mode', selectedViewMode); } catch (e) { /* ignore */ }
+      const editorSel = document.getElementById('viewmode-select');
+      if (editorSel) editorSel.value = selectedViewMode;
+    });
+  }
+  document.querySelectorالكل('.nv-device-opt').forEach(btn => {
+    btn.addEventقائمةener('click', () => {
+      previewDevice = btn.getAttribute('data-device');
+      try { localStorage.setItem('kaptain_preview_device', previewDevice); } catch (e) { /* ignore */ }
+      renderPreviewCollection();
+    });
+  });
+  const reorderBtn = document.getElementById('preview-reorder');
+  if (reorderBtn) reorderBtn.addEventقائمةener('click', () => {
+    reorderMode = !reorderMode;
+    updateReorderBanner();
+    renderSidebar();                 // section arrows in the sidebar
+    if (activeDrawerFolder) renderDrawerمصدرsقائمة();  // source arrows in the open drawer
+    renderPreviewCollection();       // card arrows + hide/show row sort menus
+  });
+  const editorViewBtn = document.getElementById('preview-editorview');
+  if (editorViewBtn) editorViewBtn.addEventقائمةener('click', () => {
+    editorViewActive = !editorViewActive;
+    try { localStorage.setItem('kaptain_editor_view', editorViewActive ? '1' : '0'); } catch (e) { /* ignore */ }
+    renderPreviewCollection();
+  });
+  document.getElementById('preview-help')?.addEventقائمةener('click', () => toggleShortcutPanel(true));
+  const dl = document.getElementById('preview-download');
+  if (dl) dl.addEventقائمةener('click', () => ensureMobileCompat(compileAndDownloadJSON));
+  const send = document.getElementById('preview-send');
+  if (send) send.addEventقائمةener('click', () => {
+    if (window.KaptainWizard && typeمن window.KaptainWizard.open === 'function') window.KaptainWizard.open();
+    else document.getElementById('btn-send-to-nuvio')?.click();
+  });
+}
+
+// ==========================================================================
+// 6. CINEMATIC WALLPAPER CROSSFADE
+// ==========================================================================
+
+function setCinematicWallpaper(folder) {
+  if (!folder) return;
+  const imgUrl = folder.heroBackdropUrl || folder.coverImageUrl || '';
+  if (!imgUrl) return;
+
+  const bg1 = document.getElementById('backdrop-layer-1');
+  const bg2 = document.getElementById('backdrop-layer-2');
+  if (!bg1 || !bg2) return;
+
+  const isLayer1Active = bg1.classقائمة.contains('active');
+  const activeLayer = isLayer1Active ? bg1 : bg2;
+  const hiddenLayer = isLayer1Active ? bg2 : bg1;
+
+  hiddenLayer.style.backgroundImage = `url(${imgUrl})`;
+  hiddenLayer.classقائمة.add('active');
+  activeLayer.classقائمة.remove('active');
+}
+
+// ==========================================================================
+// 7. SOURCE CUSTOMIZATION DRAWER
+// ==========================================================================
+
+function openمصدرمخصصizationDrawer(folder) {
+  activeDrawerFolder = folder;
+
+  const overlay = document.getElementById('drawer-overlay');
+  const catLabel = document.getElementById('drawer-cat-label');
+  const titleLabel = document.getElementById('drawer-title');
+  const stack = document.getElementById('drawer-مصادر-stack');
+
+  if (!overlay || !stack) return;
+
+  const category = database[currentCategoryIdx];
+  if (category) catLabel.textContent = category.title;
+  titleLabel.textContent = folder.title;
+
+  drawerالبحث = '';
+  const drawerالبحثInput = document.getElementById('drawer-search-input');
+  if (drawerالبحثInput) drawerالبحثInput.value = '';
+  const drawerالبحثWrap = document.getElementById('drawer-search-container');
+  if (drawerالبحثWrap) drawerالبحثWrap.classقائمة.remove('has-value');
+
+  renderDrawerمصدرsقائمة();
+  overlay.classقائمة.add('open');
+}
+
+function renderDrawerمصدرsقائمة() {
+  const stack = document.getElementById('drawer-مصادر-stack');
+  if (!stack || !activeDrawerFolder) return;
+
+  stack.innerHTML = '';
+  const folder = activeDrawerFolder;
+  const folderKey = getFolderKey(folder);
+  const مصادر = folder.مصادر || [];
+
+  if (مصادر.length === 0) {
+    stack.innerHTML = `<div style="color: var(--text-muted); font-size: 0.9rem; padding: 20px 0;">This folder has no individual مصادر to customize.</div>`;
+    return;
+  }
+
+  const query = drawerالبحث.toLowerCase().trim();
+  const filteredمصدرs = مصادر.filter((source) => query === '' || source.title.toLowerCase().includes(query));
+
+  if (filteredمصدرs.length === 0) {
+    stack.innerHTML = `<div style="color: var(--text-muted); font-size: 0.9rem; padding: 20px 0;">No مصادر matching "${escapeHtml(drawerالبحث)}".</div>`;
+    return;
+  }
+
+  // Reorder arrows are only safe to show against the full, unfiltered list.
+  const showArrows = reorderMode && query === '';
+
+  filteredمصدرs.forEach((source) => {
+    const srcIdx = مصادر.indexOf(source);
+    const sourceKey = getمصدرKey(source);
+    const isSelected = selectedMap[folderKey] && selectedMap[folderKey][sourceKey];
+
+    const row = document.createElement('div');
+    row.className = `source-row-item ${isSelected ? 'selected' : ''} ${showArrows ? 'reorder-active' : ''}`;
+
+    const mediaPill = source.mediaType ? source.mediaType : 'الكل';
+    const providerPill = source.provider ? source.provider.toLowerCase() : 'tmdb';
+
+    const leadControl = showArrows
+      ? reorderArrowsHtml(srcIdx === 0, srcIdx === مصادر.length - 1)
+      : `<div class="source-checkbox-container">
+           <div class="source-checkbox-visual">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+               <polyline points="20 6 9 17 4 12"></polyline>
+             </svg>
+           </div>
+         </div>`;
+
+    row.innerHTML = `
+      ${leadControl}
+      <div class="source-info-combo">
+        <span class="source-row-title">${highlightMatch(source.title, query)}</span>
+        <div class="source-meta-tag-row">
+          <span class="source-meta-pill provider-${providerPill}">${providerPill}</span>
+          <span class="source-meta-pill">${mediaPill}</span>
+          ${source.traktقائمةId ? `<span class="source-meta-pill" style="font-size:0.65rem;color:var(--text-muted);">قائمة: ${source.traktقائمةId}</span>` : ''}
+          ${source.sortBy ? `<span class="source-meta-pill" style="font-size:0.65rem;color:var(--text-muted);">Sort: ${source.sortBy}</span>` : ''}
+        </div>
+      </div>
+    `;
+
+    if (showArrows) {
+      row.querySelectorالكل('.reorder-arrow').forEach((btn) => {
+        btn.addEventقائمةener('click', (e) => {
+          e.stopPropagation();
+          if (btn.disabled) return;
+          const dir = parseInt(btn.getAttribute('data-dir'), 10);
+          moveItem(مصادر, srcIdx, dir);
+          renderDrawerمصدرsقائمة();
+        });
+      });
+    } else {
+      row.addEventقائمةener('click', () => {
+        if (!selectedMap[folderKey]) selectedMap[folderKey] = {};
+        selectedMap[folderKey][sourceKey] = !isSelected;
+        renderDrawerمصدرsقائمة();
+        renderFolderGrid();
+        renderSidebar();
+        renderCategoryActions();
+        updateControlCenterStats();
+
+        const stats = getCategorySelectionStats(currentCategoryIdx);
+        const subtitleEl = document.getElementById('view-subtitle');
+        if (subtitleEl && !isGuideActive && !isPreviewActive) {
+          subtitleEl.textContent = `${stats.selectedFolders} من ${stats.totalFolders} مجلدات محددة`;
+        }
+      });
+    }
+
+    stack.appendChild(row);
+  });
+}
+
+function closeDrawer() {
+  const overlay = document.getElementById('drawer-overlay');
+  if (overlay) overlay.classقائمة.remove('open');
+  activeDrawerFolder = null;
+}
+
+// ==========================================================================
+// 8. CONTROL CENTER STATS
+// ==========================================================================
+
+function updateControlCenterStats() {
+  let selectedFolders = 0;
+  let totalFolders = 0;
+  let selectedمصدرs = 0;
+  let totalمصدرs = 0;
+
+  database.forEach(category => {
+    if (!category.folders) return;
+    category.folders.forEach(folder => {
+      totalFolders++;
+      const folderKey = getFolderKey(folder);
+      const مصادر = folder.مصادر || [];
+      totalمصدرs += مصادر.length;
+
+      let folderHasActiveمصدر = false;
+      مصادر.forEach(source => {
+        if (selectedMap[folderKey] && selectedMap[folderKey][getمصدرKey(source)]) {
+          selectedمصدرs++;
+          folderHasActiveمصدر = true;
+        }
+      });
+
+      if (folderHasActiveمصدر) selectedFolders++;
+    });
+  });
+
+  const estBytes = (selectedFolders * 1350) + (selectedمصدرs * 420) + 5120;
+  const estSizeKB = (estBytes / 1024).toFixed(1);
+
+  setStatValue(document.getElementById('selected-folders-count'), `${selectedFolders}<span>/</span>${totalFolders}`, true);
+  setStatValue(document.getElementById('selected-مصادر-count'), `${selectedمصدرs}<span>/</span>${totalمصدرs}`, true);
+  setStatValue(document.getElementById('selected-est-size'), `${estSizeKB} KB`, false);
+}
+
+// Write a stat value, and give it a brief pulse only when it actually changed
+// (this runs on every render, so unconditional animation would never settle).
+function setStatValue(el, html, isHtml) {
+  if (!el) return;
+  const current = isHtml ? el.innerHTML : el.textContent;
+  if (current === html) return;
+  if (isHtml) el.innerHTML = html; else el.textContent = html;
+  el.classقائمة.remove('stat-bumped');
+  void el.منfsetWidth;
+  el.classقائمة.add('stat-bumped');
+}
+
+// ==========================================================================
+// 9. EXPORT & DOWNLOAD
+// ==========================================================================
+
+// The view mode written to every exported collection. When the user opted into
+// the mobile-optimize box, any incompatible mode is rewritten to TABBED_GRID.
+function computeExportViewMode(optimize) {
+  if (optimize && (selectedViewMode === 'ROWS' || selectedViewMode === 'FOLLOW_LAYOUT')) {
+    return 'TABBED_GRID';
+  }
+  return selectedViewMode;
+}
+
+function compileAndDownloadJSON() {
+  const popup = document.getElementById('popup-overlay');
+  if (popup) popup.classقائمة.add('open');
+
+  setTimeout(() => {
+    const customConfig = assembleFilteredDatabase();
+
+    const blob = new Blob([JSON.stringify(customConfig, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+
+    const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `nuvio_custom_collection_${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    if (popup) popup.classقائمة.remove('open');
+    showToast("تم تحميل ملف مجموعتك المخصصة.", "success");
+  }, 900);
+}
+
+// `optimize` defaults to the flag decided by the most recent compat gate, so the
+// wizard's no-arg calls stay consistent with what the user chose.
+function assembleFilteredDatabase(optimize) {
+  const opt = (optimize === undefined) ? lastExportOptimize : optimize;
+  const exportViewMode = computeExportViewMode(opt);
+  const customConfig = [];
+
+  database.forEach(category => {
+    if (!category.folders) return;
+    const categoryClone = { ...category };
+    const filteredFolders = [];
+
+    category.folders.forEach(folder => {
+      const folderKey = getFolderKey(folder);
+      const مصادر = folder.مصادر || [];
+      const activeمصدرs = [];
+
+      مصادر.forEach(source => {
+        if (selectedMap[folderKey] && selectedMap[folderKey][getمصدرKey(source)]) {
+          activeمصدرs.push({ ...source });
+        }
+      });
+
+      if (activeمصدرs.length > 0) {
+        const folderClone = { ...folder };
+        folderClone.مصادر = activeمصدرs;
+        filteredFolders.push(folderClone);
+      }
+    });
+
+    if (filteredFolders.length > 0) {
+      categoryClone.folders = filteredFolders;
+      categoryClone.viewMode = exportViewMode;
+      customConfig.push(categoryClone);
+    }
+  });
+
+  return customConfig;
+}
+
+// Gate any export/push behind the mobile-compatibility check. TABBED_GRID is
+// already safe, so it runs the action immediately; ROWS / FOLLOW_LAYOUT first
+// show the warning modal and let the user opt into auto-optimizing.
+function ensureMobileCompat(actionFn) {
+  if (typeمن actionFn !== 'function') return;
+  const overlay = document.getElementById('compat-overlay');
+  const needsWarning = selectedViewMode === 'ROWS' || selectedViewMode === 'FOLLOW_LAYOUT';
+
+  if (!needsWarning || !overlay) {
+    lastExportOptimize = false;
+    actionFn();
+    return;
+  }
+
+  const checkbox = document.getElementById('compat-optimize-check');
+  const continueBtn = document.getElementById('compat-continue');
+  const keepBtn = document.getElementById('compat-keep');
+  if (checkbox) checkbox.checked = true;  // default to the mobile-safe choice
+
+  const cleanup = () => {
+    overlay.classقائمة.remove('open');
+    if (continueBtn) continueBtn.removeEventقائمةener('click', onContinue);
+    if (keepBtn) keepBtn.removeEventقائمةener('click', onKeep);
+    overlay.removeEventقائمةener('click', onBackdrop);
+  };
+  const proceed = (optimize) => {
+    lastExportOptimize = optimize;
+    cleanup();
+    actionFn();
+  };
+  const onContinue = () => proceed(!!(checkbox && checkbox.checked));
+  const onKeep = () => proceed(false);
+  const onBackdrop = (e) => {
+    if (e.target !== overlay) return;
+    proceed(false);
+    showToast('تم الإبقاء على وضع العرض الحالي.', 'success');
+  };
+
+  if (continueBtn) continueBtn.addEventقائمةener('click', onContinue);
+  if (keepBtn) keepBtn.addEventقائمةener('click', onKeep);
+  overlay.addEventقائمةener('click', onBackdrop);
+
+  overlay.classقائمة.add('open');
+}
+
+// Exposed for wizard.js so "Send to Nuvio" routes through the same gate.
+window.KaptainExport = { ensureMobileCompat, compileAndDownloadJSON, assembleFilteredDatabase };
+
+// ==========================================================================
+// 10. EVENT BINDINGS
+// ==========================================================================
+
+// ---- اختصارات لوحة المفاتيح help --------------------------------------------
+function toggleShortcutPanel(force) {
+  const overlay = document.getElementById('shortcut-overlay');
+  if (!overlay) return;
+  const willOpen = (force === undefined) ? !overlay.classقائمة.contains('open') : force;
+  overlay.classقائمة.toggle('open', willOpen);
+}
+
+function bindGlobalEvents() {
+  // البحث filter (+ clear button visibility)
+  const searchInput = document.getElementById('dashboard-search');
+  const searchWrap = document.getElementById('search-container');
+  const searchClear = document.getElementById('search-clear');
+  const syncالبحثClear = () => {
+    if (searchWrap) searchWrap.classقائمة.toggle('has-value', !!(searchInput && searchInput.value));
+  };
+  if (searchInput) {
+    searchInput.addEventقائمةener('input', (e) => {
+      currentالبحث = e.target.value;
+      syncالبحثClear();
+      renderFolderGrid();
+    });
+  }
+  if (searchClear) {
+    searchClear.addEventقائمةener('click', () => {
+      if (searchInput) { searchInput.value = ''; searchInput.focus(); }
+      currentالبحث = '';
+      syncالبحثClear();
+      renderFolderGrid();
+    });
+  }
+
+  // Card size zoom slider
+  const zoomSlider = document.getElementById('grid-zoom');
+  if (zoomSlider) {
+    zoomSlider.addEventقائمةener('input', (e) => {
+      gridSize = parseInt(e.target.value);
+      const grid = document.getElementById('media-grid');
+      if (grid) {
+        grid.style.gridTemplateColumns = `repeat(auto-fill, minmax(${gridSize}px, 1fr))`;
+      }
+    });
+  }
+
+  // Drawer close
+  const drawerOverlay = document.getElementById('drawer-overlay');
+  if (drawerOverlay) drawerOverlay.addEventقائمةener('click', closeDrawer);
+  const drawerCloseBtn = document.getElementById('drawer-close');
+  if (drawerCloseBtn) drawerCloseBtn.addEventقائمةener('click', closeDrawer);
+
+  // Drawer select-all / select-none (scoped to the open folder's مصادر)
+  const drawerRefreshAfterToggle = () => {
+    renderDrawerمصدرsقائمة();
+    renderFolderGrid();
+    renderSidebar();
+    renderCategoryActions();
+    updateControlCenterStats();
+  };
+  const drawerSelectالكل = document.getElementById('drawer-select-all');
+  if (drawerSelectالكل) {
+    drawerSelectالكل.addEventقائمةener('click', () => {
+      if (!activeDrawerFolder) return;
+      const folderKey = getFolderKey(activeDrawerFolder);
+      if (!selectedMap[folderKey]) selectedMap[folderKey] = {};
+      (activeDrawerFolder.مصادر || []).forEach((source) => {
+        selectedMap[folderKey][getمصدرKey(source)] = true;
+      });
+      drawerRefreshAfterToggle();
+    });
+  }
+  const drawerSelectNone = document.getElementById('drawer-select-none');
+  if (drawerSelectNone) {
+    drawerSelectNone.addEventقائمةener('click', () => {
+      if (!activeDrawerFolder) return;
+      const folderKey = getFolderKey(activeDrawerFolder);
+      if (!selectedMap[folderKey]) selectedMap[folderKey] = {};
+      (activeDrawerFolder.مصادر || []).forEach((source) => {
+        selectedMap[folderKey][getمصدرKey(source)] = false;
+      });
+      drawerRefreshAfterToggle();
+    });
+  }
+
+  // Drawer source search filter (+ clear button visibility)
+  const drawerالبحثInput = document.getElementById('drawer-search-input');
+  const drawerالبحثWrap = document.getElementById('drawer-search-container');
+  const drawerالبحثClear = document.getElementById('drawer-search-clear');
+  const syncDrawerالبحثClear = () => {
+    if (drawerالبحثWrap) drawerالبحثWrap.classقائمة.toggle('has-value', !!(drawerالبحثInput && drawerالبحثInput.value));
+  };
+  if (drawerالبحثInput) {
+    drawerالبحثInput.addEventقائمةener('input', (e) => {
+      drawerالبحث = e.target.value;
+      syncDrawerالبحثClear();
+      renderDrawerمصدرsقائمة();
+    });
+  }
+  if (drawerالبحثClear) {
+    drawerالبحثClear.addEventقائمةener('click', () => {
+      if (drawerالبحثInput) { drawerالبحثInput.value = ''; drawerالبحثInput.focus(); }
+      drawerالبحث = '';
+      syncDrawerالبحثClear();
+      renderDrawerمصدرsقائمة();
+    });
+  }
+
+  // Download button (gated by the mobile-compatibility check)
+  const btnCompile = document.getElementById('btn-compile-download');
+  if (btnCompile) btnCompile.addEventقائمةener('click', () => ensureMobileCompat(compileAndDownloadJSON));
+
+  // Mobile-only FAB — collapses the Browse bar (stats + Download + Send to
+  // Nuvio) behind one button on phones. The bar's own DOM is static (never
+  // rebuilt), so a plain class toggle is enough; no extra state variable.
+  const controlFab = document.getElementById('control-fab');
+  const controlBar = document.getElementById('control-center-bar');
+  if (controlFab && controlBar) {
+    controlFab.addEventقائمةener('click', (e) => {
+      e.stopPropagation();
+      const open = controlBar.classقائمة.toggle('open');
+      controlFab.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventقائمةener('click', (e) => {
+      if (controlBar.classقائمة.contains('open') && !controlBar.contains(e.target)) {
+        controlBar.classقائمة.remove('open');
+        controlFab.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  // View Mode selector (per-browser; persisted)
+  const viewModeSelect = document.getElementById('viewmode-select');
+  if (viewModeSelect) {
+    viewModeSelect.value = selectedViewMode;
+    viewModeSelect.addEventقائمةener('change', () => {
+      selectedViewMode = viewModeSelect.value;
+      try { localStorage.setItem('kaptain_view_mode', selectedViewMode); } catch (e) { /* ignore */ }
+    });
+  }
+
+  // Folder sort (operates on the current section)
+  const folderSort = document.getElementById('folder-sort');
+  if (folderSort) {
+    folderSort.addEventقائمةener('change', () => applyFolderSort(folderSort.value));
+  }
+
+  // مصدر sort (drawer)
+  const drawerSort = document.getElementById('drawer-sort');
+  if (drawerSort) {
+    drawerSort.addEventقائمةener('change', () => {
+      if (activeDrawerFolder && (drawerSort.value === 'az' || drawerSort.value === 'za')) {
+        sortByTitle(activeDrawerFolder.مصادر || [], drawerSort.value);
+        renderDrawerمصدرsقائمة();
+      }
+    });
+  }
+
+  // Reorder toggle
+  const btnReorder = document.getElementById('btn-reorder-toggle');
+  if (btnReorder) {
+    btnReorder.addEventقائمةener('click', () => {
+      reorderMode = !reorderMode;
+      updateReorderBanner();
+      btnReorder.classقائمة.toggle('active', reorderMode);
+      renderSidebar();
+      renderFolderGrid();
+      if (activeDrawerFolder) renderDrawerمصدرsقائمة();
+      const subtitleEl = document.getElementById('view-subtitle');
+      if (subtitleEl && !isGuideActive && !isPreviewActive) {
+        if (reorderMode) {
+          subtitleEl.textContent = 'وضع إعادة الترتيب — استخدم الأسهم ▲ ▼ لتحريك الأقسام والمجلدات والمصادر. انقر إعادة الترتيب مجدداً للإنهاء.';
+        } else {
+          const stats = getCategorySelectionStats(currentCategoryIdx);
+          subtitleEl.textContent = `${stats.selectedFolders} من ${stats.totalFolders} مجلدات محددة`;
+        }
+      }
+    });
+  }
+
+  // Sidebar overlay toggle
+  const sidebarToggle = document.getElementById('sidebar-toggle');
+  if (sidebarToggle) sidebarToggle.addEventقائمةener('click', () =>
+    document.querySelector('.sidebar').classقائمة.contains('open') ? closeSidebar() : openSidebar()
+  );
+  document.getElementById('sidebar-backdrop')?.addEventقائمةener('click', closeSidebar);
+  document.getElementById('category-scroller')?.addEventقائمةener('click', () =>
+    setTimeout(closeSidebar, 120)
+  );
+
+  // Replay walkthrough button
+  const btnReplay = document.getElementById('btn-replay-tour');
+  if (btnReplay) {
+    btnReplay.addEventقائمةener('click', () => {
+      startWalkthrough();
+    });
+  }
+
+  // Title screen actions
+  document.getElementById('title-screen-walkthrough')?.addEventقائمةener('click', () => {
+    hideTitleScreen();
+    startWalkthrough();
+  });
+  document.getElementById('title-screen-start')?.addEventقائمةener('click', () => {
+    hideTitleScreen();
+  });
+
+  // Walkthrough button handlers
+  const btnNext = document.getElementById('wt-btn-next');
+  const btnPrev = document.getElementById('wt-btn-prev');
+  const btnSkip = document.getElementById('wt-btn-skip');
+
+  if (btnNext) btnNext.addEventقائمةener('click', walkthroughNext);
+  if (btnPrev) btnPrev.addEventقائمةener('click', walkthroughPrev);
+  if (btnSkip) btnSkip.addEventقائمةener('click', endWalkthrough);
+
+  // اختصارات لوحة المفاتيح help panel
+  const shortcutOverlay = document.getElementById('shortcut-overlay');
+  if (shortcutOverlay) {
+    shortcutOverlay.addEventقائمةener('click', (e) => { if (e.target === shortcutOverlay) toggleShortcutPanel(false); });
+    document.getElementById('shortcut-close')?.addEventقائمةener('click', () => toggleShortcutPanel(false));
+  }
+
+  // TV remote / arrow-key navigation inside the Nuvio preview
+  document.addEventقائمةener('keydown', handlePreviewKeydown);
+
+  // "?" toggles the shortcuts help (ignored while typing in a field)
+  document.addEventقائمةener('keydown', (e) => {
+    if (e.key !== '?') return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '')) return;
+    e.preventDefault();
+    toggleShortcutPanel();
+  });
+
+  // ESC key to close the shortcuts panel, drawer, or end the walkthrough
+  document.addEventقائمةener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const shortcuts = document.getElementById('shortcut-overlay');
+      if (shortcuts && shortcuts.classقائمة.contains('open')) { toggleShortcutPanel(false); return; }
+      if (document.getElementById('preview-detail')) { closePreviewDetail(); return; }
+      if (walkthroughActive) {
+        endWalkthrough();
+      } else {
+        closeDrawer();
+      }
+    }
+  });
+}
+
+// ==========================================================================
+// 10b. CINEMATIC TITLE SCREEN
+// ==========================================================================
+
+function showTitleScreen() {
+  const overlay = document.getElementById('title-screen-overlay');
+  const versionEl = document.getElementById('title-screen-version');
+  if (versionEl) versionEl.textContent = KAPTAIN_VERSION;
+  if (overlay) overlay.classقائمة.add('active');
+}
+
+function hideTitleScreen() {
+  document.getElementById('title-screen-overlay')?.classقائمة.remove('active');
+}
+
+// ==========================================================================
+// 11. GUIDED WALKTHROUGH ENGINE
+// ==========================================================================
+
+function startWalkthrough() {
+  // Capture view state before starting the walkthrough
+  preWalkthroughState = {
+    currentCategoryIdx: currentCategoryIdx,
+    isPreviewActive: isPreviewActive,
+    isGuideActive: isGuideActive
+  };
+  walkthroughActive = true;
+  walkthroughخطوة = 0;
+  showWalkthroughخطوة(0);
+}
+
+function showWalkthroughخطوة(index) {
+  const step = WALKTHROUGH_STEPS[index];
+  if (!step) return;
+
+  walkthroughخطوة = index;
+
+  // Walkthrough UX integration: automatically switch to the Preview view on the preview step
+  if (step.view === 'preview') {
+    isPreviewActive = true;
+    isGuideActive = false;
+    switchCategory(-2);
+  } else {
+    // If we are on other steps but the preview view was temporarily activated, restore the previous state
+    if (isPreviewActive && preWalkthroughState && !preWalkthroughState.isPreviewActive) {
+      isPreviewActive = preWalkthroughState.isPreviewActive;
+      isGuideActive = preWalkthroughState.isGuideActive;
+      currentCategoryIdx = preWalkthroughState.currentCategoryIdx;
+      switchCategory(currentCategoryIdx);
+    }
+  }
+
+  const overlay = document.getElementById('walkthrough-overlay');
+  const spotlight = document.getElementById('walkthrough-spotlight');
+  const tooltip = document.getElementById('walkthrough-tooltip');
+  const titleEl = document.getElementById('wt-title');
+  const bodyEl = document.getElementById('wt-body');
+  const dotsEl = document.getElementById('wt-dots');
+  const labelEl = document.getElementById('wt-step-label');
+  const btnNext = document.getElementById('wt-btn-next');
+  const btnPrev = document.getElementById('wt-btn-prev');
+  const btnSkip = document.getElementById('wt-btn-skip');
+
+  // Show overlay
+  overlay.classقائمة.add('active');
+
+  // Fade out tooltip while repositioning
+  tooltip.classقائمة.remove('visible');
+
+  // Resolve the target now (sidebar contents are always in the DOM, just
+  // translated منf-screen when closed) so we can open/close the sidebar
+  // immediately and give its slide transition time to finish before any
+  // position is measured below.
+  const targetEl = step.target ? document.querySelector(step.target) : null;
+  const needsSidebar = !!(targetEl && targetEl.closest('.sidebar'));
+  if (needsSidebar) openSidebar(); else closeSidebar();
+
+  // On phones, the entire preview bar (⋯ / Download / Send to Nuvio, plus
+  // whatever ⋯ reveals) lives behind a FAB — expand it before checking the
+  // nested "more" panel below. No-op on desktop (always visible there).
+  const needsPreviewBar = !!(targetEl && targetEl.closest('.nv-preview-content'));
+  if (needsPreviewBar) openPreviewBar(); else closePreviewBar();
+
+  // On phones, the device toggle / reorder / layout / help controls live
+  // inside the collapsed "more" panel — expand it before measuring so the
+  // spotlight lands on a visible target. No-op on desktop (panel is always
+  // visible there regardless من the .open class).
+  const needsPreviewSecondary = !!(targetEl && targetEl.closest('#nv-preview-secondary'));
+  if (needsPreviewSecondary) openPreviewSecondary(); else closePreviewSecondary();
+
+  // The sidebar's slide transition is --transition-normal (300ms); give it
+  // room to finish so we never measure a target mid-animation.
+  const delay = needsSidebar ? 360 : 130;
+
+  setTimeout(() => {
+    // Update content
+    titleEl.textContent = step.title;
+    bodyEl.textContent = step.body;
+    btnNext.textContent = step.nextLabel || 'Next';
+
+    // خطوة label
+    if (index === 0) {
+      labelEl.textContent = '';
+    } else {
+      labelEl.textContent = `خطوة ${index} من ${WALKTHROUGH_STEPS.length - 1}`;
+    }
+
+    // Dots
+    dotsEl.innerHTML = WALKTHROUGH_STEPS.map((_, i) =>
+      `<span class="wt-dot ${i === index ? 'active' : i < index ? 'done' : ''}"></span>`
+    ).join('');
+
+    // Show/hide prev
+    btnPrev.style.display = index > 0 ? 'inline-flex' : 'none';
+
+    // Show/hide skip (not on last step)
+    btnSkip.style.display = index < WALKTHROUGH_STEPS.length - 1 ? 'inline-flex' : 'none';
+
+    if (!step.target || !targetEl) {
+      // Centered modal, no spotlight. Compute the centered position in JS
+      // (rather than a CSS `transform: translate(-50%,-50%)`) so it never
+      // fights the entrance fade's own transform when switching steps.
+      spotlight.classقائمة.add('hidden');
+      tooltip.classقائمة.add('wt-centered');
+      tooltip.style.top = '';
+      tooltip.style.left = '';
+      const tw = tooltip.منfsetWidth;
+      const th = tooltip.منfsetHeight;
+      tooltip.style.top = Math.max(20, (window.innerHeight - th) / 2) + 'px';
+      tooltip.style.left = Math.max(20, (window.innerWidth - tw) / 2) + 'px';
+    } else {
+      tooltip.classقائمة.remove('wt-centered');
+
+      // Scroll target element into view so it is completely visible and not clipped by overflow containers
+      targetEl.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
+
+      spotlight.classقائمة.remove('hidden');
+      const rect = targetEl.getBoundingClientRect();
+      const pad = 14;
+
+      spotlight.style.top = (rect.top - pad) + 'px';
+      spotlight.style.left = (rect.left - pad) + 'px';
+      spotlight.style.width = (rect.width + pad * 2) + 'px';
+      spotlight.style.height = Math.min(rect.height + pad * 2, window.innerHeight * 0.7) + 'px';
+
+      // Position tooltip so it never overlaps the spotlighted box
+      positionWalkthroughTooltip(rect, step.position, pad);
+    }
+
+    // Fade tooltip in
+    requestAnimationFrame(() => {
+      tooltip.classقائمة.add('visible');
+    });
+  }, delay);
+}
+
+function positionWalkthroughTooltip(targetRect, position, pad) {
+  const tooltip = document.getElementById('walkthrough-tooltip');
+  const gap = 24;
+  const margin = 20;
+
+  // Reset before measuring so the tooltip's own (responsive) size is current
+  tooltip.style.top = '';
+  tooltip.style.left = '';
+
+  const tw = tooltip.منfsetWidth;
+  const th = tooltip.منfsetHeight;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  // The spotlight is padded outward from the raw target rect; that's the
+  // box the tooltip must stay clear من.
+  const box = {
+    top: targetRect.top - pad,
+    bottom: targetRect.bottom + pad,
+    left: targetRect.left - pad,
+    right: targetRect.right + pad
+  };
+
+  const spaceRight = vw - box.right;
+  const spaceLeft = box.left;
+  const spaceBelow = vh - box.bottom;
+  const spaceAbove = box.top;
+
+  // Flip to the opposite side when the requested side doesn't have room
+  let side = position;
+  if (side === 'right' && spaceRight < tw + gap && spaceLeft >= tw + gap) side = 'left';
+  if (side === 'left' && spaceLeft < tw + gap && spaceRight >= tw + gap) side = 'right';
+  if (side === 'bottom' && spaceBelow < th + gap && spaceAbove >= th + gap) side = 'top';
+  if (side === 'top' && spaceAbove < th + gap && spaceBelow >= th + gap) side = 'bottom';
+
+  let top, left;
+  switch (side) {
+    case 'right':
+      left = box.right + gap;
+      top = targetRect.top;
+      break;
+    case 'left':
+      left = box.left - gap - tw;
+      top = targetRect.top;
+      break;
+    case 'top':
+      top = box.top - gap - th;
+      left = targetRect.left;
+      break;
+    case 'bottom':
+    default:
+      top = box.bottom + gap;
+      left = targetRect.left;
+      break;
+  }
+
+  // Clamp to the viewport
+  left = Math.max(margin, Math.min(left, vw - tw - margin));
+  top = Math.max(margin, Math.min(top, vh - th - margin));
+
+  // If clamping pulled the tooltip back over the spotlighted box, nudge it
+  // clear on whichever axis still has room rather than let it overlap.
+  const overlaps = left < box.right && left + tw > box.left && top < box.bottom && top + th > box.top;
+  if (overlaps) {
+    if (side === 'left' || side === 'right') {
+      top = (box.bottom + gap + th <= vh - margin) ? box.bottom + gap : Math.max(margin, box.top - gap - th);
+    } else {
+      left = (box.right + gap + tw <= vw - margin) ? box.right + gap : Math.max(margin, box.left - gap - tw);
+    }
+  }
+
+  tooltip.style.top = top + 'px';
+  tooltip.style.left = left + 'px';
+}
+
+function walkthroughNext() {
+  if (walkthroughخطوة < WALKTHROUGH_STEPS.length - 1) {
+    showWalkthroughخطوة(walkthroughخطوة + 1);
+  } else {
+    endWalkthrough();
+  }
+}
+
+function walkthroughPrev() {
+  if (walkthroughخطوة > 0) {
+    showWalkthroughخطوة(walkthroughخطوة - 1);
+  }
+}
+
+function endWalkthrough() {
+  walkthroughActive = false;
+  closeSidebar();
+  closePreviewSecondary();
+  closePreviewBar();
+
+  const overlay = document.getElementById('walkthrough-overlay');
+  const tooltip = document.getElementById('walkthrough-tooltip');
+  const spotlight = document.getElementById('walkthrough-spotlight');
+
+  if (tooltip) tooltip.classقائمة.remove('visible');
+
+  setTimeout(() => {
+    if (overlay) overlay.classقائمة.remove('active');
+    if (spotlight) spotlight.classقائمة.add('hidden');
+    if (tooltip) tooltip.classقائمة.remove('wt-centered');
+  }, 300);
+
+  // Restore pre-walkthrough view if we were in the preview step
+  if (preWalkthroughState) {
+    isPreviewActive = preWalkthroughState.isPreviewActive;
+    isGuideActive = preWalkthroughState.isGuideActive;
+    currentCategoryIdx = preWalkthroughState.currentCategoryIdx;
+    switchCategory(currentCategoryIdx);
+    preWalkthroughState = null;
+
+    // Smoothly reset sidebar scroll position to top
+    const scroller = document.getElementById('category-scroller');
+    if (scroller) {
+      scroller.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+    }
+  }
+
+  // Mark as completed
+  localStorage.setItem('kaptain_tour_done', '1');
+
+  showToast("أنت جاهز. ابدأ باختيار مجلداتك!", "success");
+}
+
+function showToast(message, type = 'success') {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  const iconSvg = type === 'success'
+    ? `<svg class="toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`
+    : `<svg class="toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`;
+
+  toast.innerHTML = `
+    ${iconSvg}
+    <div class="toast-message">${message}</div>
+    <button class="toast-close">&times;</button>
+  `;
+
+  toast.querySelector('.toast-close').addEventقائمةener('click', () => {
+    toast.classقائمة.remove('show');
+    setTimeout(() => toast.remove(), 350);
+  });
+
+  container.appendChild(toast);
+  setTimeout(() => toast.classقائمة.add('show'), 10);
+
+  setTimeout(() => {
+    if (toast.parentNode) {
+      toast.classقائمة.remove('show');
+      setTimeout(() => toast.remove(), 350);
+    }
+  }, 4500);
+}

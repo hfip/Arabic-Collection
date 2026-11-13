@@ -34,3 +34,10 @@
 ---
 المشروع الأصلي: [ImKaptain/Kaptain-Collection](https://github.com/ImKaptain/Kaptain-Collection)  
 التعريب: [hfip](https://github.com/hfip)
+
+---
+
+## Credits & attribution
+
+This product uses the **TMDB API** but is **not endorsed or certified by TMDB**.
+Metadata and artwork are provided by TMDB — https://www.themoviedb.org/

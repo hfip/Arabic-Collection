@@ -41,3 +41,7 @@
 
 This product uses the **TMDB API** but is **not endorsed or certified by TMDB**.
 Metadata and artwork are provided by TMDB — https://www.themoviedb.org/
+
+## License
+
+MIT © 2026 Abdulluh.X (hfip) — artworks and metadata belong to their respective owners. See [LICENSE](LICENSE).
